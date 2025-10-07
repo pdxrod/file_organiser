@@ -11,7 +11,7 @@ Features:
 - Multi-volume support across file systems
 - Folder synchronization with duplicate removal
 - Git version control integration (with proper user configuration)
-- Background backup to ProtonDrive
+- Background backup to remote drives
 - Soft link preservation
 - Notification system for offline volumes
 - Robust error handling for flaky volumes
@@ -591,25 +591,25 @@ class FolderSynchronizer:
             return False
 
 
-class ProtonDriveBackup:
-    """Handles background backup to ProtonDrive."""
+class BackgroundBackup:
+    """Handles background backup to a remote/backup drive."""
     
     def __init__(self, logger: logging.Logger, config: Dict):
         self.logger = logger
         self.config = config
         self.running = False
         self.backup_queue = queue.Queue()
-        self.proton_drive_path = Path(config.get('proton_drive_path', ''))
-        if not self.proton_drive_path or str(self.proton_drive_path) == '':
-            self.logger.warning("ProtonDrive path not configured - backup disabled")
+        self.backup_drive_path = Path(config.get('backup_drive_path', ''))
+        if not self.backup_drive_path or str(self.backup_drive_path) == '':
+            self.logger.warning("Backup drive path not configured - backup disabled")
         self.notification_sent = False
     
-    def is_proton_drive_online(self) -> bool:
-        """Check if ProtonDrive is accessible."""
+    def is_backup_drive_online(self) -> bool:
+        """Check if backup drive is accessible."""
         try:
-            return self.proton_drive_path.exists() and os.access(self.proton_drive_path, os.W_OK)
+            return self.backup_drive_path.exists() and os.access(self.backup_drive_path, os.W_OK)
         except Exception as e:
-            self.logger.warning(f"ProtonDrive check failed: {e}")
+            self.logger.warning(f"Backup drive check failed: {e}")
             return False
     
     def send_notification(self, message: str):
@@ -629,15 +629,15 @@ class ProtonDriveBackup:
             # Get the link target
             link_target = os.readlink(source)
             
-            # If it's an absolute path, convert it to the ProtonDrive equivalent
+            # If it's an absolute path, convert it to the backup drive equivalent
             if os.path.isabs(link_target):
                 link_path = Path(link_target)
                 # Try to make it relative to a known base path
                 for base_path in [Path.home(), Path.cwd()]:
                     try:
                         rel_path = link_path.relative_to(base_path)
-                        # Map to ProtonDrive
-                        new_link_target = self.proton_drive_path / rel_path
+                        # Map to backup drive
+                        new_link_target = self.backup_drive_path / rel_path
                         link_target = str(new_link_target)
                         break
                     except ValueError:
@@ -655,28 +655,28 @@ class ProtonDriveBackup:
             self.logger.info(f"Copied file: {source} -> {target}")
     
     def backup_item(self, source_path: Path):
-        """Backup a single file or directory to ProtonDrive."""
-        if not self.is_proton_drive_online():
+        """Backup a single file or directory to backup drive."""
+        if not self.is_backup_drive_online():
             if not self.notification_sent:
-                self.send_notification("ProtonDrive is offline. Backup paused.")
+                self.send_notification("Backup drive is offline. Backup paused.")
                 self.notification_sent = True
             return False
         
         self.notification_sent = False
         
         try:
-            # Calculate target path in ProtonDrive
+            # Calculate target path in backup drive
             # Try to maintain directory structure relative to home or current directory
             try:
                 rel_path = source_path.relative_to(Path.home())
-                target_path = self.proton_drive_path / rel_path
+                target_path = self.backup_drive_path / rel_path
             except ValueError:
                 try:
                     rel_path = source_path.relative_to(Path.cwd())
-                    target_path = self.proton_drive_path / rel_path
+                    target_path = self.backup_drive_path / rel_path
                 except ValueError:
                     # If not under home or cwd, use a backup folder
-                    target_path = self.proton_drive_path / 'backup' / source_path.name
+                    target_path = self.backup_drive_path / 'backup' / source_path.name
             
             if source_path.is_file():
                 target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -696,14 +696,14 @@ class ProtonDriveBackup:
     
     def backup_worker(self):
         """Background worker thread for backups."""
-        self.logger.info("ProtonDrive backup worker started")
+        self.logger.info("Backup worker started")
         
         while self.running:
             try:
-                # Check if ProtonDrive is online
-                if not self.is_proton_drive_online():
+                # Check if backup drive is online
+                if not self.is_backup_drive_online():
                     if not self.notification_sent:
-                        self.send_notification("ProtonDrive is offline. Waiting...")
+                        self.send_notification("Backup drive is offline. Waiting...")
                         self.notification_sent = True
                     time.sleep(60)  # Wait 1 minute before checking again
                     continue
@@ -723,7 +723,7 @@ class ProtonDriveBackup:
                 self.logger.error(f"Error in backup worker: {e}")
                 time.sleep(60)
         
-        self.logger.info("ProtonDrive backup worker stopped")
+        self.logger.info("Backup worker stopped")
     
     def start(self):
         """Start the backup worker thread."""
@@ -759,7 +759,7 @@ class EnhancedFileOrganizer:
         # Initialize managers
         self.git_manager = GitManager(self.logger, self.config)
         self.folder_sync = FolderSynchronizer(self.logger, self.git_manager)
-        self.proton_backup = ProtonDriveBackup(self.logger, self.config)
+        self.background_backup = BackgroundBackup(self.logger, self.config)
         self.content_analyzer = DynamicContentAnalyzer(self.logger, self.config)
         
         # File classification rules
@@ -832,7 +832,7 @@ class EnhancedFileOrganizer:
             print("\nExample:")
             print('  "MAIN_DRIVE": "/Users/yourname"')
             print('  "GOOGLE_DRIVE": "/Users/yourname/Google Drive"')
-            print('  "PROTON_DRIVE": "/Users/yourname/ProtonDrive"')
+            print('  "BACKUP_DRIVE": "/Volumes/BackupDrive"')
             print('  "EXTERNAL_DRIVE": "/Volumes/YourDrive"')
             print("\n" + "=" * 70)
             sys.exit(1)
@@ -841,7 +841,7 @@ class EnhancedFileOrganizer:
         self._resolve_placeholders('source_folders')
         self._resolve_placeholders('exclude_folders')
         self._resolve_placeholder_value('output_base')
-        self._resolve_placeholder_value('proton_drive_path')
+        self._resolve_placeholder_value('backup_drive_path')
         
         # Resolve in sync_pairs
         if 'sync_pairs' in self.config:
@@ -1141,24 +1141,24 @@ class EnhancedFileOrganizer:
             removed = self.folder_sync.remove_duplicates(duplicates, keep_newest=True)
             self.logger.info(f"Removed {removed} duplicate files")
     
-    def backup_to_proton_drive(self) -> None:
-        """Queue important directories for backup to ProtonDrive."""
-        if not self.config.get('enable_proton_backup', False):
+    def queue_background_backup(self) -> None:
+        """Queue important directories for background backup."""
+        if not self.config.get('enable_background_backup', False):
             return
         
-        # Get backup directories from config, or use sensible defaults
+        # Get backup directories from config
         backup_dirs = self.config.get('backup_directories', [])
         
         if not backup_dirs:
-            self.logger.info("No backup directories configured - skipping ProtonDrive backup")
+            self.logger.info("No backup directories configured - skipping background backup")
             return
         
-        self.logger.info("Queueing items for ProtonDrive backup")
+        self.logger.info("Queueing items for background backup")
         
         for dir_path in backup_dirs:
             directory = Path(dir_path)
             if directory.exists():
-                self.proton_backup.queue_backup(directory)
+                self.background_backup.queue_backup(directory)
             else:
                 self.logger.warning(f"Backup directory does not exist: {dir_path}")
     
@@ -1207,10 +1207,10 @@ class EnhancedFileOrganizer:
             self.content_analyzer.save_discovered_categories(categories_file)
             self.logger.info(f"Discovered {len(discovered_categories)} content categories")
         
-        # Step 5: Queue backup to ProtonDrive
+        # Step 5: Queue background backup
         if hasattr(self, 'running') and not self.running:
             return
-        self.backup_to_proton_drive()
+        self.queue_background_backup()
         
         self.logger.info("Full organization cycle complete")
     
@@ -1222,9 +1222,9 @@ class EnhancedFileOrganizer:
         print("File Organizer is running. Press Ctrl-C to stop.")
         print("=" * 70 + "\n")
         
-        # Start ProtonDrive backup worker
-        if self.config['enable_proton_backup']:
-            self.proton_backup.start()
+        # Start background backup worker
+        if self.config.get('enable_background_backup', False):
+            self.background_backup.start()
         
         def signal_handler(signum, frame):
             print("\n\n" + "=" * 70)
@@ -1258,10 +1258,10 @@ class EnhancedFileOrganizer:
                 if self.running:
                     time.sleep(300)  # Wait 5 minutes before retrying
         
-        # Stop ProtonDrive backup worker
-        if self.config['enable_proton_backup']:
-            print("Stopping ProtonDrive backup worker...")
-            self.proton_backup.stop()
+        # Stop background backup worker
+        if self.config.get('enable_background_backup', False):
+            print("Stopping background backup worker...")
+            self.background_backup.stop()
         
         print("\n" + "=" * 70)
         print("File Organizer stopped successfully")
@@ -1350,7 +1350,7 @@ def get_test_config():
         "enable_duplicate_detection": False,  # Disable for test
         "enable_folder_sync": False,  # Disable for test
         "enable_git_tracking": False,  # Disable for test
-        "enable_proton_backup": False,  # Disable for test
+        "enable_background_backup": False,  # Disable for test
         "flaky_volume_retries": 3,
         "retry_delay": 5,
         "sync_pairs": [],
