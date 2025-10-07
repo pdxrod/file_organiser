@@ -51,6 +51,18 @@ except ImportError:
     docx = None
     PyPDF2 = None
 
+try:
+    from striprtf.striprtf import rtf_to_text
+except ImportError:
+    rtf_to_text = None
+
+try:
+    from odf import text as odf_text
+    from odf.opendocument import load as odf_load
+except ImportError:
+    odf_text = None
+    odf_load = None
+
 
 GITIGNORE_TEMPLATE = """.fseventsd/
 ._.DS_Store
@@ -749,7 +761,7 @@ class EnhancedFileOrganizer:
         self.config_file = config_file
         self.test_mode = test_mode
         self.config = self._load_config()
-        self.running = False
+        self.running = True  # Always set to True initially (even for --scan-once)
         self.logger = self._setup_logging()
         
         # Validate and resolve drive placeholders (skip in test mode)
@@ -1002,14 +1014,44 @@ class EnhancedFileOrganizer:
             if file_path.stat().st_size > self.config.get('max_file_size', 100 * 1024 * 1024):
                 return ""
             
+            # Plain text files
             if extension == '.txt':
                 with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                     return f.read()
             
-            elif extension in ['.doc', '.docx'] and docx:
+            # Microsoft Word .docx (Office Open XML)
+            elif extension == '.docx' and docx:
                 doc = docx.Document(file_path)
                 return '\n'.join([paragraph.text for paragraph in doc.paragraphs])
             
+            # Rich Text Format
+            elif extension == '.rtf' and rtf_to_text:
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    rtf_content = f.read()
+                    return rtf_to_text(rtf_content)
+            
+            # OpenDocument Text (.odt)
+            elif extension == '.odt' and odf_load and odf_text:
+                doc = odf_load(str(file_path))
+                paragraphs = doc.getElementsByType(odf_text.P)
+                return '\n'.join([str(p) for p in paragraphs])
+            
+            # Old Microsoft Word .doc (try to read as plain text - limited success)
+            elif extension == '.doc':
+                # Note: This is a fallback and won't work perfectly for binary .doc files
+                # For better .doc support, users would need antiword or similar tools
+                try:
+                    with open(file_path, 'rb') as f:
+                        # Try to extract readable text from binary doc
+                        content = f.read()
+                        text = content.decode('latin-1', errors='ignore')
+                        # Filter out binary garbage, keep only readable text
+                        readable = ''.join(c for c in text if c.isprintable() or c.isspace())
+                        return readable
+                except:
+                    pass
+            
+            # PDF files
             elif extension == '.pdf' and PyPDF2:
                 with open(file_path, 'rb') as f:
                     reader = PyPDF2.PdfReader(f)
@@ -1018,8 +1060,8 @@ class EnhancedFileOrganizer:
                         text += page.extract_text()
                     return text
             
-            elif extension in ['.jpg', '.jpeg', '.png', '.gif'] and pytesseract:
-                # OCR for images
+            # OCR for images
+            elif extension in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff'] and pytesseract:
                 image = Image.open(file_path)
                 return pytesseract.image_to_string(image)
                 
@@ -1305,21 +1347,40 @@ def create_test_environment():
                 # Create files with some content
                 if file_name == '20240101-fishing-trip.txt':
                     content = "Fishing trip notes from January 1st, 2024. Caught several fish."
+                    with open(file_path, 'w') as f:
+                        f.write(content)
                 elif file_name == 'something.doc':
                     content = "This document contains information about fishing techniques."
+                    with open(file_path, 'w') as f:
+                        f.write(content)
                 elif file_name == 'something-else.docx':
-                    content = "This is a general document with no specific theme."
+                    # Create a real .docx file if python-docx is available
+                    # Try to import at runtime in case it was installed after script loaded
+                    try:
+                        import docx as docx_module
+                        doc = docx_module.Document()
+                        doc.add_paragraph("This is about fishing, but it's called something-else.docx")
+                        doc.save(file_path)
+                    except ImportError:
+                        # Fallback to text file
+                        with open(file_path, 'w') as f:
+                            f.write("This is about fishing, but it's called something-else.docx")
                 elif file_name == '20250116-shopping.doc':
                     content = "Shopping list for January 16th, 2025. Need to buy shoes."
+                    with open(file_path, 'w') as f:
+                        f.write(content)
                 elif file_name == 'insurance-claim.doc':
                     content = "Insurance claim form for property damage."
+                    with open(file_path, 'w') as f:
+                        f.write(content)
                 elif file_name == 'my-insurance.pdf':
                     content = "Insurance policy document."
+                    with open(file_path, 'w') as f:
+                        f.write(content)
                 else:
                     content = f"Test content for {file_name}"
-                
-                with open(file_path, 'w') as f:
-                    f.write(content)
+                    with open(file_path, 'w') as f:
+                        f.write(content)
                 
                 # Set proper creation dates for test files
                 if file_name == '20240101-fishing-trip.txt':

@@ -116,6 +116,17 @@ Automatically organizes by file type:
 - `audio/` - .mp3, .wav, .flac, .aac, .ogg
 - `code/` - .py, .js, .html, .css, .java, .cpp
 
+**Text Extraction & Content Analysis:**
+- `.txt` - Plain text ✅
+- `.docx` - Microsoft Word (python-docx) ✅
+- `.rtf` - Rich Text Format (striprtf) ✅
+- `.odt` - OpenDocument Text (odfpy) ✅
+- `.doc` - Old Word format (basic text extraction, limited) ⚠️
+- `.pdf` - PDF files (PyPDF2) ✅
+- Images - OCR text extraction (pytesseract + tesseract) ✅
+
+**Note:** For better `.doc` support, consider converting to `.docx` first.
+
 ### 5. **Advanced Features** (Production Mode)
 
 - **Folder Synchronization**: Keep folder pairs in sync

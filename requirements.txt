@@ -5,6 +5,8 @@ pytesseract>=0.3.10
 # Document parsing
 python-docx>=0.8.11
 PyPDF2>=3.0.0
+striprtf>=0.0.26
+odfpy>=1.4.1
 
 # Optional: For better PDF handling
 # pypdf>=3.0.0
