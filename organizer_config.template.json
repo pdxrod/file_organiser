@@ -1,0 +1,52 @@
+{
+    "comment": "Template configuration file - Copy to organizer_config.json and customize",
+    "drives": {
+        "MAIN_DRIVE": "UNCONFIGURED - Set this to your main drive path (e.g., /Users/yourname)",
+        "GOOGLE_DRIVE": "UNCONFIGURED - Set this to your Google Drive path (e.g., /Users/yourname/Google Drive)",
+        "PROTON_DRIVE": "UNCONFIGURED - Set this to your ProtonDrive path (e.g., /Users/yourname/ProtonDrive)",
+        "EXTERNAL_DRIVE": "UNCONFIGURED - Set this to your external drive path (e.g., /Volumes/YourDrive)"
+    },
+    "source_folders": [
+        "MAIN_DRIVE/Documents",
+        "MAIN_DRIVE/Pictures"
+    ],
+    "exclude_folders": [
+        "PROTON_DRIVE",
+        "MAIN_DRIVE/Library",
+        "MAIN_DRIVE/.Trash",
+        "MAIN_DRIVE/Applications",
+        "MAIN_DRIVE/organized"
+    ],
+    "output_base": "MAIN_DRIVE/organized",
+    "proton_drive_path": "PROTON_DRIVE",
+    "backup_directories": [
+        "MAIN_DRIVE/Documents",
+        "MAIN_DRIVE/Pictures"
+    ],
+    "git_user": "UNCONFIGURED - Set to your name",
+    "git_email": "UNCONFIGURED - Set to your email",
+    "git_exclude_folders": [],
+    "scan_interval": 3600,
+    "max_file_size": 104857600,
+    "enable_content_analysis": true,
+    "enable_duplicate_detection": false,
+    "enable_folder_sync": false,
+    "enable_git_tracking": false,
+    "enable_proton_backup": false,
+    "flaky_volume_retries": 3,
+    "retry_delay": 5,
+    "sync_pairs": [
+        {
+            "comment": "Example: Keep local copy in sync with Google Drive",
+            "source": "GOOGLE_DRIVE/MyFolder",
+            "target": "MAIN_DRIVE/MyFolder"
+        }
+    ],
+    "ml_content_analysis": {
+        "enabled": true,
+        "min_keyword_frequency": 3,
+        "min_category_size": 5,
+        "max_categories": 50,
+        "stop_words_enabled": true
+    }
+}

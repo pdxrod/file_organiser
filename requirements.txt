@@ -1,0 +1,18 @@
+# Core dependencies
+Pillow>=9.0.0
+pytesseract>=0.3.10
+
+# Document parsing
+python-docx>=0.8.11
+PyPDF2>=3.0.0
+
+# Optional: For better PDF handling
+# pypdf>=3.0.0
+
+# Optional: For advanced text processing
+# nltk>=3.8
+# spacy>=3.4.0
+
+# Optional: For machine learning content classification
+# scikit-learn>=1.2.0
+# transformers>=4.20.0
