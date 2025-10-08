@@ -4,17 +4,25 @@ A Python program that intelligently organizes files using AI/ML-powered dynamic 
 
 ## 🚀 Quick Start
 
+### Requirements
+
+- **Python 3.13** (tested) or Python 3.8+
+- pip package manager
+
 ### 1. Install Dependencies
 
+**Python packages:**
 ```bash
 pip install -r requirements.txt
 ```
 
-Optional (for advanced features):
+**System tools (required for OCR and video/PDF processing):**
 ```bash
-# For OCR (image text extraction)
-brew install tesseract  # macOS
-apt-get install tesseract-ocr  # Linux
+# macOS
+brew install tesseract poppler
+
+# Linux
+apt-get install tesseract-ocr poppler-utils
 ```
 
 ### 2. Run in Test Mode (Safe)
@@ -123,9 +131,17 @@ Automatically organizes by file type:
 - `.odt` - OpenDocument Text (odfpy) ✅
 - `.doc` - Old Word format (basic text extraction, limited) ⚠️
 - `.pdf` - PDF files (PyPDF2) ✅
-- Images - OCR text extraction (pytesseract + tesseract) ✅
+  - **Scanned PDFs**: Auto-detects and uses OCR if no text found ✨
+- **Images** - OCR text extraction (pytesseract + tesseract) ✅
+  - Formats: `.jpg`, `.png`, `.gif`, `.bmp`, `.tiff`, `.webp`
+- **Videos** - Frame-by-frame OCR text extraction ✨ **NEW!**
+  - Formats: `.mp4`, `.avi`, `.mov`, `.mkv`, `.wmv`, `.flv`, `.m4v`
+  - Samples frames every 10 seconds, extracts visible text
+  - Great for finding text in presentations, tutorials, screencasts
 
-**Note:** For better `.doc` support, consider converting to `.docx` first.
+**System Requirements:**
+- `tesseract` OCR engine: `brew install tesseract` (macOS) or `apt install tesseract-ocr` (Linux)
+- `poppler-utils` for PDF→image: `brew install poppler` (macOS) or `apt install poppler-utils` (Linux)
 
 ### 5. **Advanced Features** (Production Mode)
 
