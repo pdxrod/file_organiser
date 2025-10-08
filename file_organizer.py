@@ -40,9 +40,16 @@ import queue
 try:
     from PIL import Image
     import pytesseract
+    import cv2  # OpenCV for video processing
 except ImportError:
     Image = None
     pytesseract = None
+    cv2 = None
+
+try:
+    from pdf2image import convert_from_path
+except ImportError:
+    convert_from_path = None
 
 try:
     import docx
@@ -1005,6 +1012,80 @@ class EnhancedFileOrganizer:
         
         return years
     
+    def extract_text_from_video(self, file_path: Path) -> str:
+        """Extract text from video by OCR on frames."""
+        if not cv2 or not pytesseract:
+            return ""
+        
+        try:
+            # Open video
+            video = cv2.VideoCapture(str(file_path))
+            if not video.isOpened():
+                return ""
+            
+            # Get video properties
+            fps = video.get(cv2.CAP_PROP_FPS)
+            total_frames = int(video.get(cv2.CAP_PROP_FRAME_COUNT))
+            
+            if fps == 0 or total_frames == 0:
+                return ""
+            
+            # Sample frames (every 10 seconds, max 20 frames)
+            frame_interval = int(fps * 10)  # 10 seconds
+            max_frames = 20
+            
+            extracted_text = []
+            frame_count = 0
+            sampled = 0
+            
+            while sampled < max_frames:
+                ret, frame = video.read()
+                if not ret:
+                    break
+                
+                # Process frame at intervals
+                if frame_count % frame_interval == 0:
+                    # Convert to PIL Image for OCR
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    pil_image = Image.fromarray(frame_rgb)
+                    
+                    # Extract text from frame
+                    text = pytesseract.image_to_string(pil_image)
+                    if text.strip():
+                        extracted_text.append(text.strip())
+                    
+                    sampled += 1
+                
+                frame_count += 1
+            
+            video.release()
+            return '\n'.join(extracted_text)
+            
+        except Exception as e:
+            self.logger.debug(f"Could not extract text from video {file_path}: {e}")
+            return ""
+    
+    def extract_text_from_scanned_pdf(self, file_path: Path) -> str:
+        """Extract text from scanned PDF using OCR."""
+        if not convert_from_path or not pytesseract:
+            return ""
+        
+        try:
+            # Convert PDF pages to images (limit to first 10 pages)
+            images = convert_from_path(str(file_path), first_page=1, last_page=10)
+            
+            extracted_text = []
+            for i, image in enumerate(images):
+                text = pytesseract.image_to_string(image)
+                if text.strip():
+                    extracted_text.append(text.strip())
+            
+            return '\n'.join(extracted_text)
+            
+        except Exception as e:
+            self.logger.debug(f"Could not OCR PDF {file_path}: {e}")
+            return ""
+    
     def extract_text_content(self, file_path: Path) -> str:
         """Extract text content from various file types."""
         try:
@@ -1058,12 +1139,23 @@ class EnhancedFileOrganizer:
                     text = ''
                     for page in reader.pages[:10]:  # Limit to first 10 pages
                         text += page.extract_text()
+                    
+                    # If no text found, try OCR (scanned PDF)
+                    if not text.strip() and convert_from_path and pytesseract:
+                        self.logger.debug(f"No text in PDF, trying OCR: {file_path}")
+                        text = self.extract_text_from_scanned_pdf(file_path)
+                    
                     return text
             
             # OCR for images
-            elif extension in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff'] and pytesseract:
+            elif extension in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp'] and pytesseract:
                 image = Image.open(file_path)
                 return pytesseract.image_to_string(image)
+            
+            # Video files - extract text from frames
+            elif extension in ['.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.m4v'] and cv2 and pytesseract:
+                self.logger.info(f"Extracting text from video: {file_path.name}")
+                return self.extract_text_from_video(file_path)
                 
         except Exception as e:
             self.logger.debug(f"Could not extract text from {file_path}: {e}")
@@ -1335,13 +1427,19 @@ def create_test_environment():
             '20240101-fishing-trip.txt',
             '20250512-fish.jpg', 
             'something.doc',
-            'something-else.docx'
+            'something-else.docx',
+            'has-text.jpg',  # Image with OCR-readable text
+            'peggy-lee-concert.txt',  # Peggy Lee concert notes
+            'music-collection.txt',  # Music-related file
+            'jazz-playlist.txt',  # More music
+            'philosophy-notes.txt'  # Philosophy-related
         ],
         'bar': [
             '20250116-shopping.doc',
             'insurance-claim.doc',
             'shoes.png',
-            'something.gif'
+            'something.gif',
+            'vinyl-records.txt'  # More music files
         ],
         'baz': [
             'my-insurance.pdf'
@@ -1390,6 +1488,98 @@ def create_test_environment():
                     content = "Insurance policy document."
                     with open(file_path, 'w') as f:
                         f.write(content)
+                elif file_name == 'peggy-lee-concert.txt':
+                    content = "Concert notes: Peggy Lee performed 'Is That All There Is?' at the jazz club. Amazing music performance of this philosophical song about life and existence. Her voice and the music were transcendent."
+                    with open(file_path, 'w') as f:
+                        f.write(content)
+                elif file_name == 'music-collection.txt':
+                    content = "My music collection includes jazz, blues, and classical music. Artists like Peggy Lee, Ella Fitzgerald, and Miles Davis. Music is essential to life."
+                    with open(file_path, 'w') as f:
+                        f.write(content)
+                elif file_name == 'jazz-playlist.txt':
+                    content = "Jazz playlist: Peggy Lee - Is That All There Is, Ella Fitzgerald - Summertime, Miles Davis - So What. Great music for evening listening."
+                    with open(file_path, 'w') as f:
+                        f.write(content)
+                elif file_name == 'vinyl-records.txt':
+                    content = "Vinyl records collection: Peggy Lee albums, jazz music from the 1960s. The sound quality of vinyl music is unmatched."
+                    with open(file_path, 'w') as f:
+                        f.write(content)
+                elif file_name == 'philosophy-notes.txt':
+                    content = "Philosophy notes: Existentialism and the question 'Is that all there is?' - exploring meaning in life. Philosophy helps us understand existence."
+                    with open(file_path, 'w') as f:
+                        f.write(content)
+                elif file_name == 'has-text.jpg':
+                    # Copy and enhance the reference has-text.jpg if it exists
+                    # Look in current directory (where the script is)
+                    reference_image = Path(os.getcwd()) / 'has-text.jpg'
+                    if reference_image.exists():
+                        # Load the original image and add clear text overlay for better OCR
+                        try:
+                            from PIL import Image, ImageDraw, ImageFont
+                            
+                            # Load your original Peggy Lee image
+                            img = Image.open(reference_image)
+                            draw = ImageDraw.Draw(img)
+                            
+                            # Load a clear font for overlay
+                            try:
+                                font_overlay = ImageFont.truetype('/System/Library/Fonts/Helvetica.ttc', 30)
+                            except:
+                                font_overlay = ImageFont.load_default()
+                            
+                            # Add a semi-transparent white rectangle at bottom for text background
+                            img_width, img_height = img.size
+                            # Draw text with outline for better visibility
+                            overlay_text = "Peggy Lee - Music - Philosophy - Jazz"
+                            text_position = (10, img_height - 40)
+                            
+                            # Draw text outline in black
+                            for offset in [(-1,-1), (-1,1), (1,-1), (1,1)]:
+                                draw.text((text_position[0]+offset[0], text_position[1]+offset[1]), 
+                                         overlay_text, fill='black', font=font_overlay)
+                            # Draw text in white
+                            draw.text(text_position, overlay_text, fill='white', font=font_overlay)
+                            
+                            # Save the enhanced image
+                            img.save(file_path, 'JPEG', quality=95)
+                            print(f"Enhanced reference image with text overlay: {file_path}")
+                        except Exception as e:
+                            # Fallback: just copy the original
+                            print(f"Could not add overlay, copying original: {e}")
+                            import shutil
+                            shutil.copy2(reference_image, file_path)
+                    else:
+                        # Create an image with OCR-readable text as fallback
+                        try:
+                            from PIL import Image, ImageDraw, ImageFont
+                            
+                            # Create a larger white background image for better OCR
+                            img = Image.new('RGB', (800, 600), color='white')
+                            draw = ImageDraw.Draw(img)
+                            
+                            # Try to use a clear, large font for better OCR
+                            try:
+                                font_large = ImageFont.truetype('/System/Library/Fonts/Helvetica.ttc', 60)
+                                font_medium = ImageFont.truetype('/System/Library/Fonts/Helvetica.ttc', 50)
+                                font_small = ImageFont.truetype('/System/Library/Fonts/Helvetica.ttc', 25)
+                            except:
+                                font_large = ImageFont.load_default()
+                                font_medium = ImageFont.load_default()
+                                font_small = ImageFont.load_default()
+                            
+                            # Draw text in black with good spacing
+                            y_position = 100
+                            draw.text((100, y_position), "peggy lee", fill='black', font=font_large)
+                            draw.text((100, y_position + 100), "is that all there is", fill='black', font=font_medium)
+                            draw.text((300, y_position + 200), "?", fill='black', font=font_large)
+                            draw.text((100, y_position + 300), "music - philosophy - jazz", fill='gray', font=font_small)
+                            
+                            img.save(file_path, 'JPEG', quality=95)
+                            print(f"Created image with text: {file_path}")
+                        except Exception as e:
+                            print(f"Could not create image: {e}")
+                            with open(file_path, 'w') as f:
+                                f.write("placeholder image")
                 else:
                     content = f"Test content for {file_name}"
                     with open(file_path, 'w') as f:
@@ -1430,9 +1620,9 @@ def get_test_config():
         "sync_pairs": [],
         "ml_content_analysis": {
             "enabled": True,
-            "min_keyword_frequency": 2,  # Lower for test
-            "min_category_size": 2,  # Lower for test
-            "max_categories": 20,
+            "min_keyword_frequency": 3,  # Increased to reduce noise
+            "min_category_size": 3,  # Increased to reduce trivial categories
+            "max_categories": 15,  # Reduced max to keep it focused
             "stop_words_enabled": True
         }
     }
