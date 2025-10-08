@@ -1268,12 +1268,25 @@ class EnhancedFileOrganizer:
         if self.config.get('enable_background_backup', False):
             self.background_backup.start()
         
+        # Track Ctrl-C presses for force quit
+        self.interrupt_count = 0
+        
         def signal_handler(signum, frame):
-            print("\n\n" + "=" * 70)
-            print("Stopping File Organizer... (this may take a moment)")
-            print("=" * 70 + "\n")
-            self.logger.info("Received shutdown signal - stopping gracefully")
-            self.running = False
+            self.interrupt_count += 1
+            
+            if self.interrupt_count == 1:
+                print("\n\n" + "=" * 70)
+                print("Stopping File Organizer... (this may take a moment)")
+                print("Press Ctrl-C again to force quit immediately")
+                print("=" * 70 + "\n")
+                self.logger.info("Received shutdown signal - stopping gracefully")
+                self.running = False
+            else:
+                print("\n\n" + "=" * 70)
+                print("Force quitting...")
+                print("=" * 70 + "\n")
+                self.logger.warning("Force quit - some operations may not have completed")
+                sys.exit(0)
         
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
@@ -1487,6 +1500,14 @@ def main():
     elif production_mode and args.dedupe_only:
         organizer.remove_duplicates_across_system()
     elif args.scan_once:
+        # Set up signal handler for scan-once mode too
+        def signal_handler(signum, frame):
+            print("\n\nInterrupted by user. Exiting...")
+            sys.exit(0)
+        
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+        
         organizer.run_full_cycle()
     else:
         organizer.run_daemon()
