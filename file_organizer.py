@@ -52,6 +52,19 @@ except ImportError:
     convert_from_path = None
 
 try:
+    import easyocr  # Better OCR for artistic text
+except ImportError:
+    easyocr = None
+
+try:
+    from transformers import CLIPProcessor, CLIPModel
+    import torch
+except ImportError:
+    CLIPProcessor = None
+    CLIPModel = None
+    torch = None
+
+try:
     import docx
     import PyPDF2
 except ImportError:
@@ -129,6 +142,34 @@ class DynamicContentAnalyzer:
         self.min_keyword_freq = self.ml_config.get('min_keyword_frequency', 3)
         self.min_category_size = self.ml_config.get('min_category_size', 5)
         self.max_categories = self.ml_config.get('max_categories', 50)
+        
+        # AI models (lazy-loaded)
+        self._easyocr_reader = None
+        self._clip_model = None
+        self._clip_processor = None
+    
+    def get_easyocr_reader(self):
+        """Lazy-load EasyOCR reader."""
+        if self._easyocr_reader is None and easyocr:
+            try:
+                self.logger.info("Loading EasyOCR model (first time only)...")
+                self._easyocr_reader = easyocr.Reader(['en'], gpu=False)
+                self.logger.info("EasyOCR loaded successfully")
+            except Exception as e:
+                self.logger.warning(f"Could not load EasyOCR: {e}")
+        return self._easyocr_reader
+    
+    def get_clip_model(self):
+        """Lazy-load CLIP model."""
+        if self._clip_model is None and CLIPModel and CLIPProcessor:
+            try:
+                self.logger.info("Loading CLIP model (first time only)...")
+                self._clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
+                self._clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+                self.logger.info("CLIP loaded successfully")
+            except Exception as e:
+                self.logger.warning(f"Could not load CLIP: {e}")
+        return self._clip_model, self._clip_processor
     
     def _get_stop_words(self) -> Set[str]:
         """Get common English stop words."""
@@ -189,6 +230,7 @@ class DynamicContentAnalyzer:
     def extract_keywords_from_path(self, path: Path) -> Set[str]:
         """
         Extract keywords from file and folder names in the path.
+        Only extracts from filename and immediate parent folder, not full path.
         """
         keywords = set()
         
@@ -196,11 +238,11 @@ class DynamicContentAnalyzer:
         filename = path.stem
         keywords.update(self.extract_keywords_from_text(filename))
         
-        # Extract from parent folder names
-        for parent in path.parents:
-            folder_name = parent.name
-            if folder_name and folder_name not in ['/', '.']:
-                keywords.update(self.extract_keywords_from_text(folder_name))
+        # Extract only from immediate parent folder (not entire path)
+        # This avoids noise like 'Users', 'rod', 'dev', etc.
+        if path.parent and path.parent.name not in ['/', '.', 'test']:
+            parent_name = path.parent.name
+            keywords.update(self.extract_keywords_from_text(parent_name))
         
         return keywords
     
@@ -948,8 +990,11 @@ class EnhancedFileOrganizer:
         """
         Classify file by year.
         Priority: 1) Year in filename, 2) ctime, 3) mtime, 4) atime
+        Valid year range: 1752-2035 (Gregorian calendar adoption to near future)
         """
         years = []
+        MIN_YEAR = 1752  # Gregorian calendar adoption in Britain
+        MAX_YEAR = 2035  # Reasonable future limit
         
         # Priority 1: Extract year from filename (YYYYMMDD or YYYY-MM-DD patterns)
         filename = file_path.stem  # Without extension
@@ -958,25 +1003,32 @@ class EnhancedFileOrganizer:
         match = re.match(r'^(\d{4})\d{2}\d{2}', filename)
         if match:
             year = match.group(1)
-            if 1900 <= int(year) <= 2100:  # Sanity check
+            year_int = int(year)
+            if MIN_YEAR <= year_int <= MAX_YEAR:
                 years.append(year)
                 self.logger.debug(f"Found year {year} in filename: {file_path.name}")
                 return years
+            else:
+                self.logger.debug(f"Rejected year {year} (out of range {MIN_YEAR}-{MAX_YEAR}): {file_path.name}")
         
         # Pattern 2: YYYY-MM-DD anywhere (e.g., backup-2024-01-01.txt)
         match = re.search(r'(\d{4})-\d{2}-\d{2}', filename)
         if match:
             year = match.group(1)
-            if 1900 <= int(year) <= 2100:
+            year_int = int(year)
+            if MIN_YEAR <= year_int <= MAX_YEAR:
                 years.append(year)
                 self.logger.debug(f"Found year {year} in filename: {file_path.name}")
                 return years
+            else:
+                self.logger.debug(f"Rejected year {year} (out of range): {file_path.name}")
         
         # Pattern 3: YYYY anywhere in filename (e.g., report2024.doc)
-        matches = re.findall(r'\b(19\d{2}|20\d{2})\b', filename)
-        if matches:
-            # If multiple years found, use the earliest one
-            year = min(matches)
+        matches = re.findall(r'\b(\d{4})\b', filename)
+        valid_matches = [y for y in matches if MIN_YEAR <= int(y) <= MAX_YEAR]
+        if valid_matches:
+            # If multiple valid years found, use the earliest one
+            year = min(valid_matches)
             years.append(year)
             self.logger.debug(f"Found year {year} in filename: {file_path.name}")
             return years
@@ -1148,9 +1200,84 @@ class EnhancedFileOrganizer:
                     return text
             
             # OCR for images
-            elif extension in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp'] and pytesseract:
+            elif extension in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp']:
+                self.logger.info(f"Processing image: {file_path.name}")
                 image = Image.open(file_path)
-                return pytesseract.image_to_string(image)
+                
+                all_text = []
+                
+                # Method 1: Try EasyOCR first (better with artistic text)
+                easyocr_reader = self.content_analyzer.get_easyocr_reader()
+                if easyocr_reader:
+                    try:
+                        import numpy as np
+                        img_array = np.array(image)
+                        ocr_results = easyocr_reader.readtext(img_array)
+                        # Extract text from results (format: [(bbox, text, confidence)])
+                        easyocr_text = ' '.join([text for (bbox, text, conf) in ocr_results if conf > 0.3])
+                        if easyocr_text.strip():
+                            all_text.append(easyocr_text)
+                            self.logger.info(f"EasyOCR found: {easyocr_text[:50]}...")
+                    except Exception as e:
+                        self.logger.debug(f"EasyOCR failed: {e}")
+                
+                # Method 2: CLIP for object/scene recognition
+                clip_model, clip_processor = self.content_analyzer.get_clip_model()
+                if clip_model and clip_processor:
+                    try:
+                        # Define categories to check
+                        candidate_labels = [
+                            "fish", "fishing", "ocean", "sea", "water",
+                            "person", "portrait", "woman", "man",
+                            "music", "concert", "performance", "singer",
+                            "document", "text", "writing",
+                            "nature", "animal", "food", "building"
+                        ]
+                        
+                        # Process image with CLIP
+                        inputs = clip_processor(text=candidate_labels, images=image, return_tensors="pt", padding=True)
+                        outputs = clip_model(**inputs)
+                        logits_per_image = outputs.logits_per_image
+                        probs = logits_per_image.softmax(dim=1)
+                        
+                        # Get top 3 matches above confidence threshold
+                        top_indices = probs[0].argsort(descending=True)[:3]
+                        clip_keywords = []
+                        for idx in top_indices:
+                            confidence = probs[0][idx].item()
+                            if confidence > 0.15:  # 15% confidence threshold
+                                label = candidate_labels[idx]
+                                clip_keywords.append(label)
+                                self.logger.info(f"CLIP detected '{label}' ({confidence:.2f}) in {file_path.name}")
+                        
+                        if clip_keywords:
+                            all_text.append(' '.join(clip_keywords))
+                    except Exception as e:
+                        self.logger.debug(f"CLIP failed: {e}")
+                
+                # Method 3: Tesseract OCR (fallback)
+                if pytesseract:
+                    try:
+                        # Try different PSM modes
+                        for psm in [3, 6, 11, 12]:
+                            try:
+                                config = f'--psm {psm}'
+                                text = pytesseract.image_to_string(image, config=config)
+                                if text.strip():
+                                    all_text.append(text)
+                            except:
+                                pass
+                    except:
+                        pass
+                
+                # Combine all extracted text
+                combined_text = '\n'.join(all_text)
+                if combined_text.strip():
+                    self.logger.info(f"Total extracted {len(combined_text)} chars from {file_path.name}")
+                    return combined_text
+                
+                self.logger.info(f"No text/objects found in {file_path.name}")
+                return ""
             
             # Video files - extract text from frames
             elif extension in ['.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.m4v'] and cv2 and pytesseract:
@@ -1435,13 +1562,14 @@ def create_test_environment():
             'peggy-lee-concert.txt',
             'music-collection.txt',
             'jazz-playlist.txt',
-            'philosophy-notes.txt'
+            'philosophy-notes.txt',
+            '28980328.jpg'  # Will copy from examples/ - tests invalid date rejection (year 2898)
         ],
         'bar': [
             '20250116-shopping.doc',
             'insurance-claim.doc',
             'shoes.png',
-            'something.gif',  # Will copy from examples/ if exists
+            'something.png',  # Will copy from examples/ if exists (fish photo)
             'vinyl-records.txt'
         ],
         'baz': [
