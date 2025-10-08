@@ -1555,7 +1555,6 @@ def create_test_environment():
     test_files = {
         'foo': [
             '20240101-fishing-trip.txt',
-            '20250512-fish.jpg', 
             'something.doc',
             'something-else.docx',  # Will copy from examples/ if exists
             'has-text.jpg',  # Will copy from examples/ if exists
