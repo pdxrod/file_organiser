@@ -1422,24 +1422,27 @@ def create_test_environment():
     test_dir = Path('test')
     test_dir.mkdir(exist_ok=True)
     
+    # Examples folder for reference files (images, docs, etc.)
+    examples_dir = Path('examples')
+    
     test_files = {
         'foo': [
             '20240101-fishing-trip.txt',
             '20250512-fish.jpg', 
             'something.doc',
-            'something-else.docx',
-            'has-text.jpg',  # Image with OCR-readable text
-            'peggy-lee-concert.txt',  # Peggy Lee concert notes
-            'music-collection.txt',  # Music-related file
-            'jazz-playlist.txt',  # More music
-            'philosophy-notes.txt'  # Philosophy-related
+            'something-else.docx',  # Will copy from examples/ if exists
+            'has-text.jpg',  # Will copy from examples/ if exists
+            'peggy-lee-concert.txt',
+            'music-collection.txt',
+            'jazz-playlist.txt',
+            'philosophy-notes.txt'
         ],
         'bar': [
             '20250116-shopping.doc',
             'insurance-claim.doc',
             'shoes.png',
-            'something.gif',
-            'vinyl-records.txt'  # More music files
+            'something.gif',  # Will copy from examples/ if exists
+            'vinyl-records.txt'
         ],
         'baz': [
             'my-insurance.pdf'
@@ -1455,6 +1458,19 @@ def create_test_environment():
         for file_name in files:
             file_path = folder_path / file_name
             if not file_path.exists():
+                # First, check if this file exists in examples/ folder
+                example_file = examples_dir / file_name
+                if example_file.exists():
+                    # Copy from examples
+                    try:
+                        import shutil
+                        shutil.copy2(example_file, file_path)
+                        print(f"Copied from examples: {file_path}")
+                        continue
+                    except Exception as e:
+                        print(f"Could not copy from examples: {e}")
+                        # Fall through to generate
+                
                 # Create files with some content
                 if file_name == '20240101-fishing-trip.txt':
                     content = "Fishing trip notes from January 1st, 2024. Caught several fish."
@@ -1465,17 +1481,15 @@ def create_test_environment():
                     with open(file_path, 'w') as f:
                         f.write(content)
                 elif file_name == 'something-else.docx':
-                    # Create a real .docx file if python-docx is available
-                    # Try to import at runtime in case it was installed after script loaded
+                    # Fallback: Create a simple .docx if not in examples/
                     try:
                         import docx as docx_module
                         doc = docx_module.Document()
-                        doc.add_paragraph("This is about fishing, but it's called something-else.docx")
+                        doc.add_paragraph("This document is about fishing and outdoor activities.")
                         doc.save(file_path)
                     except ImportError:
-                        # Fallback to text file
                         with open(file_path, 'w') as f:
-                            f.write("This is about fishing, but it's called something-else.docx")
+                            f.write("Fallback: fishing document")
                 elif file_name == '20250116-shopping.doc':
                     content = "Shopping list for January 16th, 2025. Need to buy shoes."
                     with open(file_path, 'w') as f:
@@ -1509,77 +1523,29 @@ def create_test_environment():
                     with open(file_path, 'w') as f:
                         f.write(content)
                 elif file_name == 'has-text.jpg':
-                    # Copy and enhance the reference has-text.jpg if it exists
-                    # Look in current directory (where the script is)
-                    reference_image = Path(os.getcwd()) / 'has-text.jpg'
-                    if reference_image.exists():
-                        # Load the original image and add clear text overlay for better OCR
+                    # Fallback: Create a simple test image
+                    try:
+                        from PIL import Image, ImageDraw, ImageFont
+                        img = Image.new('RGB', (400, 300), color='white')
+                        draw = ImageDraw.Draw(img)
                         try:
-                            from PIL import Image, ImageDraw, ImageFont
-                            
-                            # Load your original Peggy Lee image
-                            img = Image.open(reference_image)
-                            draw = ImageDraw.Draw(img)
-                            
-                            # Load a clear font for overlay
-                            try:
-                                font_overlay = ImageFont.truetype('/System/Library/Fonts/Helvetica.ttc', 30)
-                            except:
-                                font_overlay = ImageFont.load_default()
-                            
-                            # Add a semi-transparent white rectangle at bottom for text background
-                            img_width, img_height = img.size
-                            # Draw text with outline for better visibility
-                            overlay_text = "Peggy Lee - Music - Philosophy - Jazz"
-                            text_position = (10, img_height - 40)
-                            
-                            # Draw text outline in black
-                            for offset in [(-1,-1), (-1,1), (1,-1), (1,1)]:
-                                draw.text((text_position[0]+offset[0], text_position[1]+offset[1]), 
-                                         overlay_text, fill='black', font=font_overlay)
-                            # Draw text in white
-                            draw.text(text_position, overlay_text, fill='white', font=font_overlay)
-                            
-                            # Save the enhanced image
-                            img.save(file_path, 'JPEG', quality=95)
-                            print(f"Enhanced reference image with text overlay: {file_path}")
-                        except Exception as e:
-                            # Fallback: just copy the original
-                            print(f"Could not add overlay, copying original: {e}")
-                            import shutil
-                            shutil.copy2(reference_image, file_path)
-                    else:
-                        # Create an image with OCR-readable text as fallback
-                        try:
-                            from PIL import Image, ImageDraw, ImageFont
-                            
-                            # Create a larger white background image for better OCR
-                            img = Image.new('RGB', (800, 600), color='white')
-                            draw = ImageDraw.Draw(img)
-                            
-                            # Try to use a clear, large font for better OCR
-                            try:
-                                font_large = ImageFont.truetype('/System/Library/Fonts/Helvetica.ttc', 60)
-                                font_medium = ImageFont.truetype('/System/Library/Fonts/Helvetica.ttc', 50)
-                                font_small = ImageFont.truetype('/System/Library/Fonts/Helvetica.ttc', 25)
-                            except:
-                                font_large = ImageFont.load_default()
-                                font_medium = ImageFont.load_default()
-                                font_small = ImageFont.load_default()
-                            
-                            # Draw text in black with good spacing
-                            y_position = 100
-                            draw.text((100, y_position), "peggy lee", fill='black', font=font_large)
-                            draw.text((100, y_position + 100), "is that all there is", fill='black', font=font_medium)
-                            draw.text((300, y_position + 200), "?", fill='black', font=font_large)
-                            draw.text((100, y_position + 300), "music - philosophy - jazz", fill='gray', font=font_small)
-                            
-                            img.save(file_path, 'JPEG', quality=95)
-                            print(f"Created image with text: {file_path}")
-                        except Exception as e:
-                            print(f"Could not create image: {e}")
-                            with open(file_path, 'w') as f:
-                                f.write("placeholder image")
+                            font = ImageFont.truetype('/System/Library/Fonts/Helvetica.ttc', 40)
+                        except:
+                            font = ImageFont.load_default()
+                        draw.text((50, 100), "Test Image", fill='black', font=font)
+                        img.save(file_path, 'JPEG')
+                    except:
+                        with open(file_path, 'w') as f:
+                            f.write("placeholder")
+                elif file_name == 'something.gif':
+                    # Fallback: Create a simple test image
+                    try:
+                        from PIL import Image
+                        img = Image.new('RGB', (200, 200), color='blue')
+                        img.save(file_path, 'GIF')
+                    except:
+                        with open(file_path, 'w') as f:
+                            f.write("placeholder")
                 else:
                     content = f"Test content for {file_name}"
                     with open(file_path, 'w') as f:
