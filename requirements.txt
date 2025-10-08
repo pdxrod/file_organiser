@@ -4,6 +4,11 @@ pytesseract>=0.3.10
 opencv-python>=4.8.0  # Also installs numpy
 pdf2image>=1.16.0
 
+# Advanced AI/ML for image understanding
+easyocr>=1.7.0  # Better OCR for artistic text
+transformers>=4.30.0  # For CLIP image classification
+torch>=2.0.0  # PyTorch for ML models
+
 # Document parsing
 python-docx>=0.8.11
 PyPDF2>=3.0.0
