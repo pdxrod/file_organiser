@@ -53,6 +53,20 @@
     "enable_background_backup": false,
     "flaky_volume_retries": 3,
     "retry_delay": 5,
+    "use_rsync": true,
+    "sync_exclude_patterns": [
+        "node_modules",
+        ".git",
+        "__pycache__",
+        ".DS_Store",
+        "*.pyc",
+        ".venv",
+        "venv",
+        "dist",
+        "build",
+        ".next",
+        ".cache"
+    ],
     "sync_pairs": [
         {
             "comment": "Example: Sync from one location to another - you can have multiple sync pairs",

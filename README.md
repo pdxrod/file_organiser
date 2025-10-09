@@ -1,5 +1,22 @@
 # File Organizer
 
+> **⚠️ WARNING - USE AT YOUR OWN RISK ⚠️**
+>
+> This tool moves, copies, synchronizes, and can DELETE files across your entire file system.
+> - Test thoroughly in TEST MODE before using production mode
+> - Always maintain current backups before running in production
+> - Review your `organizer_config.json` carefully
+> - The `--delete` flag in rsync will remove files from target that don't exist in source
+> - No warranty is provided - see LICENSE file
+>
+> **YOU are responsible for any data loss. Use with caution.**
+
+---
+
+**AI-Generated Code**: This project was created using Cursor AI/ML based on requirements and feedback from the repository owner. All code was AI-generated with human guidance and testing.
+
+---
+
 A Python program that intelligently organizes files using AI/ML-powered dynamic content discovery. It scans directories, learns categories from your actual files, and creates organized soft links by year, type, and discovered content categories.
 
 ## 🚀 Quick Start

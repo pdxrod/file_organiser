@@ -2,6 +2,13 @@
 """
 File Organizer using AI/ML
 
+AI-Generated Code: Created using Cursor AI/ML with human guidance and testing.
+Author: Rod (https://github.com/pdxrod)
+License: MIT (see LICENSE file)
+
+WARNING: This tool moves, copies, syncs, and can DELETE files. Use at your own risk.
+Always test in TEST MODE first and maintain current backups.
+
 Unified version with test and production modes:
 - DEFAULT (no args): Runs in TEST MODE with foo/bar/baz folders
 - With --REAL or -R: Runs in PRODUCTION MODE on your entire file system
@@ -9,12 +16,13 @@ Unified version with test and production modes:
 Features:
 - Dynamic content discovery (learns categories from YOUR files)
 - Multi-volume support across file systems
-- Folder synchronization with duplicate removal
+- Folder synchronization with duplicate removal (rsync with --delete)
 - Git version control integration (with proper user configuration)
 - Background backup to remote drives
 - Soft link preservation
 - Notification system for offline volumes
 - Robust error handling for flaky volumes
+- Advanced OCR and AI vision (EasyOCR, CLIP)
 """
 
 import os
@@ -593,6 +601,61 @@ class FolderSynchronizer:
         
         return removed_count
     
+    def should_exclude_from_sync(self, path: Path, sync_excludes: List[str]) -> bool:
+        """Check if path should be excluded from sync."""
+        path_str = str(path)
+        for exclude in sync_excludes:
+            if exclude in path_str:
+                return True
+        return False
+    
+    def sync_with_rsync(self, source: Path, target: Path, sync_mode: str, sync_excludes: List[str]) -> bool:
+        """Fast synchronization using rsync with checksum comparison."""
+        try:
+            self.logger.info(f"Using rsync (checksum mode) to sync {source} -> {target}")
+            
+            # Build rsync command
+            cmd = [
+                'rsync',
+                '-avh',  # archive, verbose, human-readable
+                '--checksum',  # Compare by content checksum, not timestamp!
+                '--delete',  # Remove files in target that aren't in source
+                '--stats',  # Show statistics
+            ]
+            
+            # Add exclusions
+            for exclude in sync_excludes:
+                cmd.extend(['--exclude', exclude])
+            
+            # Add source and target (trailing slash important for rsync!)
+            cmd.append(f'{source}/')
+            cmd.append(f'{target}/')
+            
+            # Run rsync
+            self.logger.info(f"Running rsync with checksum comparison")
+            self.logger.info(f"Excluding: {', '.join(sync_excludes)}")
+            
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            
+            if result.returncode == 0:
+                # Parse rsync output for stats
+                if 'Number of regular files transferred:' in result.stdout:
+                    for line in result.stdout.split('\n'):
+                        if 'transferred:' in line or 'speedup' in line:
+                            self.logger.info(f"rsync: {line.strip()}")
+                
+                self.logger.info(f"rsync completed successfully")
+                # Commit changes
+                self.git_manager.commit_after_sync(target, f"Synchronized from {source}")
+                return True
+            else:
+                self.logger.error(f"rsync failed: {result.stderr}")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"rsync sync failed: {e}")
+            return False
+    
     def sync_directories(self, source: Path, target: Path, sync_mode: str = 'newer') -> bool:
         """
         Synchronize two directories.
@@ -604,11 +667,26 @@ class FolderSynchronizer:
         
         target.mkdir(parents=True, exist_ok=True)
         
+        # Get sync exclusions from config
+        sync_excludes = self.git_manager.config.get('sync_exclude_patterns', [
+            'node_modules', '.git', '__pycache__', '.DS_Store', '*.pyc', 
+            '.venv', 'venv', 'dist', 'build', '.next', '.cache'
+        ])
+        
+        # Try rsync first (much faster)
+        use_rsync = self.git_manager.config.get('use_rsync', True)
+        if use_rsync and shutil.which('rsync'):
+            return self.sync_with_rsync(source, target, sync_mode, sync_excludes)
+        
         # Manage git before changes
         self.git_manager.manage_directory(target, f"sync from {source}")
         
         try:
             for source_item in source.rglob('*'):
+                # Skip excluded paths
+                if self.should_exclude_from_sync(source_item, sync_excludes):
+                    continue
+                    
                 if source_item.is_file():
                     relative_path = source_item.relative_to(source)
                     target_item = target / relative_path
@@ -934,7 +1012,7 @@ class EnhancedFileOrganizer:
     
     def _setup_logging(self) -> logging.Logger:
         """Setup logging configuration."""
-        logger = logging.getLogger('file_organizer_v2')
+        logger = logging.getLogger('file_organizer')
         logger.setLevel(logging.INFO)
         
         if not logger.handlers:
@@ -946,9 +1024,10 @@ class EnhancedFileOrganizer:
             console_handler.setFormatter(console_formatter)
             logger.addHandler(console_handler)
             
-            # File handler
+            # File handler - truncate log in production mode
             log_file = Path.home() / '.file_organizer.log'
-            file_handler = logging.FileHandler(log_file)
+            log_mode = 'a' if self.test_mode else 'w'  # Append in test mode, truncate in production
+            file_handler = logging.FileHandler(log_file, mode=log_mode)
             file_handler.setFormatter(console_formatter)
             logger.addHandler(file_handler)
             
