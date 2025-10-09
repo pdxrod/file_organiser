@@ -55,7 +55,7 @@
     "retry_delay": 5,
     "sync_pairs": [
         {
-            "comment": "Example: Sync from one location to another",
+            "comment": "Example: Sync from one location to another - you can have multiple sync pairs",
             "source": "EXTERNAL_DRIVE_1/MyFolder",
             "target": "MAIN_DRIVE/MyFolder"
         }
