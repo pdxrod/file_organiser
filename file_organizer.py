@@ -901,6 +901,17 @@ class EnhancedFileOrganizer:
         self.background_backup = BackgroundBackup(self.logger, self.config)
         self.content_analyzer = DynamicContentAnalyzer(self.logger, self.config)
         
+        # Set progress file path based on mode
+        if test_mode:
+            # In test mode, save to project directory
+            self.progress_file = Path.cwd() / '.file_organizer_progress.json'
+        else:
+            # In production mode, save to home directory
+            self.progress_file = Path.home() / '.file_organizer_progress.json'
+        
+        # Load progress from previous run (if interrupted)
+        self.progress = self._load_progress()
+        
         # File classification rules
         self.file_type_mappings = {
             'documents': ['.txt', '.doc', '.docx', '.pdf', '.rtf', '.odt'],
@@ -1032,6 +1043,61 @@ class EnhancedFileOrganizer:
             logger.addHandler(file_handler)
             
         return logger
+    
+    def _load_progress(self) -> Dict:
+        """Load progress from previous run if it exists."""
+        if self.progress_file.exists():
+            try:
+                with open(self.progress_file, 'r') as f:
+                    progress = json.load(f)
+                    # Check if progress is recent (within last 24 hours)
+                    if 'timestamp' in progress:
+                        age_hours = (time.time() - progress['timestamp']) / 3600
+                        if age_hours < 24:
+                            self.logger.info(f"Resuming from previous run (interrupted {age_hours:.1f} hours ago)")
+                            return progress
+                        else:
+                            self.logger.info(f"Previous progress too old ({age_hours:.1f} hours), starting fresh")
+            except Exception as e:
+                self.logger.warning(f"Could not load progress file: {e}")
+        
+        return {
+            'timestamp': time.time(),
+            'current_step': 'scan',
+            'scan_folders_completed': [],
+            'sync_pairs_completed': [],
+            'deduplication_completed': False,
+            'backup_completed': False
+        }
+    
+    def _save_progress(self):
+        """Save current progress to file."""
+        try:
+            self.progress['timestamp'] = time.time()
+            with open(self.progress_file, 'w') as f:
+                json.dump(self.progress, f, indent=2)
+            self.logger.debug(f"Progress saved: {self.progress['current_step']}")
+        except Exception as e:
+            self.logger.warning(f"Could not save progress: {e}")
+    
+    def _clear_progress(self):
+        """Clear progress file after successful completion."""
+        try:
+            if self.progress_file.exists():
+                self.progress_file.unlink()
+                self.logger.info("Progress cleared - cycle completed successfully")
+        except Exception as e:
+            self.logger.warning(f"Could not clear progress file: {e}")
+        
+        # Reset in-memory progress
+        self.progress = {
+            'timestamp': time.time(),
+            'current_step': 'scan',
+            'scan_folders_completed': [],
+            'sync_pairs_completed': [],
+            'deduplication_completed': False,
+            'backup_completed': False
+        }
     
     def _safe_path_operation(self, operation, *args, **kwargs):
         """Safely execute path operations with retry logic for flaky volumes."""
@@ -1501,19 +1567,44 @@ class EnhancedFileOrganizer:
         
         self.logger.info("Starting folder synchronization")
         
-        for sync_pair in self.config.get('sync_pairs', []):
+        sync_pairs = self.config.get('sync_pairs', [])
+        completed_pairs = self.progress.get('sync_pairs_completed', [])
+        
+        for i, sync_pair in enumerate(sync_pairs):
+            # Skip already completed pairs
+            if i in completed_pairs:
+                source = sync_pair['source']
+                target = sync_pair['target']
+                self.logger.info(f"✓ Skipping already completed sync: {source} -> {target}")
+                continue
+            
             source = Path(sync_pair['source'])
             target = Path(sync_pair['target'])
             
             if source.exists():
-                self.logger.info(f"Syncing {source} -> {target}")
+                self.logger.info(f"Syncing ({i+1}/{len(sync_pairs)}): {source} -> {target}")
                 self.folder_sync.sync_directories(source, target, sync_mode='newer')
+                
+                # Mark this pair as completed
+                completed_pairs.append(i)
+                self.progress['sync_pairs_completed'] = completed_pairs
+                self.progress['current_step'] = 'sync'
+                self._save_progress()
             else:
                 self.logger.warning(f"Source folder does not exist: {source}")
+                # Still mark as completed so we don't get stuck
+                completed_pairs.append(i)
+                self.progress['sync_pairs_completed'] = completed_pairs
+                self._save_progress()
     
     def remove_duplicates_across_system(self) -> None:
         """Find and remove duplicates across all source folders."""
         if not self.config['enable_duplicate_detection']:
+            return
+        
+        # Skip if already completed
+        if self.progress.get('deduplication_completed', False):
+            self.logger.info("✓ Skipping deduplication - already completed in this run")
             return
         
         self.logger.info("Scanning for duplicate files")
@@ -1525,10 +1616,20 @@ class EnhancedFileOrganizer:
             self.logger.info(f"Found {len(duplicates)} groups of duplicate files")
             removed = self.folder_sync.remove_duplicates(duplicates, keep_newest=True)
             self.logger.info(f"Removed {removed} duplicate files")
+        
+        # Mark as completed
+        self.progress['deduplication_completed'] = True
+        self.progress['current_step'] = 'deduplication'
+        self._save_progress()
     
     def queue_background_backup(self) -> None:
         """Queue important directories for background backup."""
         if not self.config.get('enable_background_backup', False):
+            return
+        
+        # Skip if already completed
+        if self.progress.get('backup_completed', False):
+            self.logger.info("✓ Skipping backup - already queued in this run")
             return
         
         # Get backup directories from config
@@ -1546,6 +1647,11 @@ class EnhancedFileOrganizer:
                 self.background_backup.queue_backup(directory)
             else:
                 self.logger.warning(f"Backup directory does not exist: {dir_path}")
+        
+        # Mark as completed
+        self.progress['backup_completed'] = True
+        self.progress['current_step'] = 'backup'
+        self._save_progress()
     
     def run_full_cycle(self) -> None:
         """Run a complete organization cycle with dynamic content discovery."""
@@ -1553,29 +1659,37 @@ class EnhancedFileOrganizer:
         self.logger.info("Starting full organization cycle")
         self.logger.info("=" * 80)
         
-        # Step 1: Sync configured folders
-        if hasattr(self, 'running') and not self.running:
-            return
-        self.sync_configured_folders()
+        # Step 1: Scan and organize files FIRST (gives immediate value before time-consuming operations)
+        self.logger.info("Step 1: Scanning and organizing files...")
         
-        # Step 2: Remove duplicates
-        if hasattr(self, 'running') and not self.running:
-            return
-        self.remove_duplicates_across_system()
+        scan_folders = self.config['source_folders']
+        completed_scan_folders = self.progress.get('scan_folders_completed', [])
         
-        # Step 3: Scan and organize files (this builds keyword frequencies)
-        for folder in self.config['source_folders']:
+        for i, folder in enumerate(scan_folders):
             if hasattr(self, 'running') and not self.running:
                 return
+            
+            # Skip already completed folders
+            if i in completed_scan_folders:
+                self.logger.info(f"Skipping already scanned folder: {folder}")
+                continue
+            
             folder_path = Path(folder)
             if folder_path.exists():
+                self.logger.info(f"Scanning folder {i+1}/{len(scan_folders)}: {folder}")
                 self._safe_path_operation(self.scan_directory, folder_path)
+                
+                # Mark this folder as completed
+                completed_scan_folders.append(i)
+                self.progress['scan_folders_completed'] = completed_scan_folders
+                self.progress['current_step'] = 'scan'
+                self._save_progress()
         
-        # Step 4: Discover content categories based on learned keywords
+        # Step 2: Discover content categories based on learned keywords
         if hasattr(self, 'running') and not self.running:
             return
         if self.config.get('ml_content_analysis', {}).get('enabled', True):
-            self.logger.info("Discovering content categories from analyzed files...")
+            self.logger.info("Step 2: Discovering content categories from analyzed files...")
             discovered_categories = self.content_analyzer.discover_categories()
             
             # Create soft links for discovered categories
@@ -1592,12 +1706,32 @@ class EnhancedFileOrganizer:
             self.content_analyzer.save_discovered_categories(categories_file)
             self.logger.info(f"Discovered {len(discovered_categories)} content categories")
         
+        self.logger.info(f"✓ Soft link organization complete! Check {self.config['output_base']}")
+        
+        # Step 3: Sync configured folders (time-consuming, runs after organization)
+        if hasattr(self, 'running') and not self.running:
+            return
+        self.logger.info("Step 3: Syncing configured folders (this may take a while)...")
+        self.sync_configured_folders()
+        
+        # Step 4: Remove duplicates (time-consuming, runs after organization)
+        if hasattr(self, 'running') and not self.running:
+            return
+        self.logger.info("Step 4: Scanning for duplicate files (this may take a while)...")
+        self.remove_duplicates_across_system()
+        
         # Step 5: Queue background backup
         if hasattr(self, 'running') and not self.running:
             return
+        self.logger.info("Step 5: Queueing background backup...")
         self.queue_background_backup()
         
+        # All steps complete - clear progress
+        self._clear_progress()
+        
+        self.logger.info("=" * 80)
         self.logger.info("Full organization cycle complete")
+        self.logger.info("=" * 80)
     
     def run_daemon(self) -> None:
         """Run the organizer as a background daemon."""
