@@ -1221,9 +1221,11 @@ class EnhancedFileOrganizer:
                     except Exception as e:
                         self.logger.debug(f"EasyOCR failed: {e}")
                 
-                # Method 2: CLIP for object/scene recognition
-                clip_model, clip_processor = self.content_analyzer.get_clip_model()
-                if clip_model and clip_processor:
+                # Method 2: CLIP for object/scene recognition (optional - slow on CPU)
+                use_clip = self.config.get('ml_content_analysis', {}).get('use_clip', False)
+                if use_clip:
+                    clip_model, clip_processor = self.content_analyzer.get_clip_model()
+                if use_clip and clip_model and clip_processor:
                     try:
                         # Define categories to check
                         candidate_labels = [
@@ -1297,8 +1299,20 @@ class EnhancedFileOrganizer:
             
             target_path = target_dir / target_name
             
-            # Remove existing link if it exists
-            if target_path.exists() or target_path.is_symlink():
+            # Check if link already exists and points to correct location
+            if target_path.is_symlink():
+                try:
+                    existing_target = os.readlink(target_path)
+                    relative_source = os.path.relpath(source_path, target_dir)
+                    if existing_target == relative_source:
+                        # Link already exists and is correct - skip
+                        return True
+                except:
+                    pass
+                # Link exists but is wrong - remove it
+                target_path.unlink()
+            elif target_path.exists():
+                # Regular file exists - remove it
                 target_path.unlink()
             
             # Create relative symlink
@@ -1716,7 +1730,8 @@ def get_test_config():
             "min_keyword_frequency": 3,  # Increased to reduce noise
             "min_category_size": 3,  # Increased to reduce trivial categories
             "max_categories": 15,  # Reduced max to keep it focused
-            "stop_words_enabled": True
+            "stop_words_enabled": True,
+            "use_clip": False  # Disable CLIP by default (very slow on CPU, enable for GPU)
         }
     }
 
