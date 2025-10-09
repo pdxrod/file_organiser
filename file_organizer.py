@@ -1205,10 +1205,27 @@ class EnhancedFileOrganizer:
                     for page in reader.pages[:10]:  # Limit to first 10 pages
                         text += page.extract_text()
                     
-                    # If no text found, try OCR (scanned PDF)
-                    if not text.strip() and convert_from_path and pytesseract:
-                        self.logger.debug(f"No text in PDF, trying OCR: {file_path}")
-                        text = self.extract_text_from_scanned_pdf(file_path)
+                    # Check if extracted text is meaningful (not just garbage)
+                    if text.strip():
+                        # Count words of reasonable length (3+ chars, mostly alphabetic)
+                        words = text.split()
+                        good_words = [w for w in words if len(w) >= 3 and sum(c.isalpha() for c in w) / len(w) > 0.7]
+                        
+                        # If fewer than 10 good words per 100 chars, it's probably garbage
+                        words_per_100_chars = (len(good_words) * 100) / len(text) if len(text) > 0 else 0
+                        
+                        if words_per_100_chars < 10:
+                            self.logger.info(f"PDF text looks garbled ({words_per_100_chars:.1f} words/100chars), trying OCR")
+                            if convert_from_path and pytesseract:
+                                ocr_text = self.extract_text_from_scanned_pdf(file_path)
+                                # Use OCR if it found more content
+                                if len(ocr_text.strip()) > len(text.strip()):
+                                    text = ocr_text
+                    else:
+                        # No text at all, try OCR
+                        if convert_from_path and pytesseract:
+                            self.logger.info(f"No text in PDF, trying OCR: {file_path.name}")
+                            text = self.extract_text_from_scanned_pdf(file_path)
                     
                     return text
             
