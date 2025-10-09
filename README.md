@@ -132,16 +132,22 @@ Automatically organizes by file type:
 - `.doc` - Old Word format (basic text extraction, limited) ⚠️
 - `.pdf` - PDF files (PyPDF2) ✅
   - **Scanned PDFs**: Auto-detects and uses OCR if no text found ✨
-- **Images** - OCR text extraction (pytesseract + tesseract) ✅
+- **Images** - Advanced OCR and object recognition ✨ **NEW!**
+  - **EasyOCR**: Reads text in photos, artistic fonts, low contrast (better than Tesseract!)
+  - **Tesseract**: Fallback OCR with multiple modes
+  - **CLIP** (optional): Recognizes objects in photos (fish, people, buildings, etc.)
   - Formats: `.jpg`, `.png`, `.gif`, `.bmp`, `.tiff`, `.webp`
-- **Videos** - Frame-by-frame OCR text extraction ✨ **NEW!**
+- **Videos** - Frame-by-frame OCR text extraction ✨
   - Formats: `.mp4`, `.avi`, `.mov`, `.mkv`, `.wmv`, `.flv`, `.m4v`
   - Samples frames every 10 seconds, extracts visible text
-  - Great for finding text in presentations, tutorials, screencasts
 
 **System Requirements:**
 - `tesseract` OCR engine: `brew install tesseract` (macOS) or `apt install tesseract-ocr` (Linux)
 - `poppler-utils` for PDF→image: `brew install poppler` (macOS) or `apt install poppler-utils` (Linux)
+
+**AI Features (Optional):**
+- **EasyOCR**: Enabled by default, works on CPU (slower than Tesseract but more accurate)
+- **CLIP**: Disabled by default (very slow on CPU ~30min first load). Enable with `"use_clip": true` in config if you have a GPU
 
 ### 5. **Advanced Features** (Production Mode)
 
