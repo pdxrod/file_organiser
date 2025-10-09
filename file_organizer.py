@@ -1240,13 +1240,14 @@ class EnhancedFileOrganizer:
                     clip_model, clip_processor = self.content_analyzer.get_clip_model()
                 if use_clip and clip_model and clip_processor:
                     try:
-                        # Define categories to check
+                        # Define categories to check (use keyword-friendly forms)
                         candidate_labels = [
-                            "fish", "fishing", "ocean", "sea", "water",
-                            "person", "portrait", "woman", "man",
-                            "music", "concert", "performance", "singer",
-                            "document", "text", "writing",
-                            "nature", "animal", "food", "building"
+                            "fishing", "fish", "ocean", "sea", "water", "aquarium",
+                            "person", "portrait", "woman", "man", "people",
+                            "music", "concert", "performance", "singer", "musician",
+                            "document", "text", "writing", "book",
+                            "nature", "animal", "food", "building", "landscape",
+                            "car", "vehicle", "technology", "computer"
                         ]
                         
                         # Process image with CLIP
@@ -1689,11 +1690,11 @@ def get_test_config():
         "sync_pairs": [],
         "ml_content_analysis": {
             "enabled": True,
-            "min_keyword_frequency": 3,  # Increased to reduce noise
-            "min_category_size": 3,  # Increased to reduce trivial categories
+            "min_keyword_frequency": 2,  # Lower for test mode  
+            "min_category_size": 2,  # Lower for test mode - we have small dataset
             "max_categories": 15,  # Reduced max to keep it focused
             "stop_words_enabled": True,
-            "use_clip": False  # Disable CLIP by default (very slow on CPU, enable for GPU)
+            "use_clip": True  # Enable CLIP in test mode to demonstrate fish detection
         }
     }
 
