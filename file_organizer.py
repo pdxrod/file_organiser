@@ -1115,9 +1115,32 @@ class EnhancedFileOrganizer:
     def should_exclude_path(self, path: Path) -> bool:
         """Check if path should be excluded from processing."""
         path_str = str(path)
-        for exclude in self.config['exclude_folders']:
+        
+        # Check exclude_folders (absolute paths)
+        for exclude in self.config.get('exclude_folders', []):
             if path_str.startswith(exclude):
                 return True
+        
+        # Check exclude_patterns (folder/file names anywhere in path)
+        for pattern in self.config.get('exclude_patterns', []):
+            if pattern in path_str:
+                return True
+        
+        # Check exclude_extensions
+        if path.is_file():
+            extension = path.suffix.lower()
+            if extension in self.config.get('exclude_extensions', []):
+                return True
+            
+            # Check minimum file size (skip tiny files like icons)
+            min_size = self.config.get('min_file_size', 0)
+            if min_size > 0:
+                try:
+                    if path.stat().st_size < min_size:
+                        return True
+                except Exception:
+                    pass
+        
         return False
     
     def classify_by_type(self, file_path: Path) -> List[str]:
