@@ -1169,18 +1169,31 @@ class EnhancedFileOrganizer:
                 paragraphs = doc.getElementsByType(odf_text.P)
                 return '\n'.join([str(p) for p in paragraphs])
             
-            # Old Microsoft Word .doc (try to read as plain text - limited success)
+            # Old Microsoft Word .doc
             elif extension == '.doc':
-                # Note: This is a fallback and won't work perfectly for binary .doc files
-                # For better .doc support, users would need antiword or similar tools
+                # Try antiword first (best for .doc files)
+                try:
+                    result = subprocess.run(
+                        ['antiword', str(file_path)],
+                        capture_output=True,
+                        text=True,
+                        timeout=30
+                    )
+                    if result.returncode == 0 and result.stdout.strip():
+                        return result.stdout
+                except Exception as e:
+                    self.logger.debug(f"antiword failed for {file_path}: {e}")
+                
+                # Fallback: try to extract readable text from binary
                 try:
                     with open(file_path, 'rb') as f:
-                        # Try to extract readable text from binary doc
                         content = f.read()
                         text = content.decode('latin-1', errors='ignore')
                         # Filter out binary garbage, keep only readable text
                         readable = ''.join(c for c in text if c.isprintable() or c.isspace())
-                        return readable
+                        # Only return if we got something reasonable
+                        if len(readable.strip()) > 50:
+                            return readable
                 except:
                     pass
             
@@ -1569,24 +1582,21 @@ def create_test_environment():
     test_files = {
         'foo': [
             '20240101-fishing-trip.txt',
-            'something.doc',
-            'something-else.docx',  # Will copy from examples/ if exists
-            'has-text.jpg',  # Will copy from examples/ if exists
+            'something-else.docx',  # Will copy from examples/ (real docx about fishing)
+            'announcement.doc',  # Will copy from examples/ (real doc file)
+            'has-text.jpg',  # Will copy from examples/ (Peggy Lee image with text)
             'peggy-lee-concert.txt',
             'music-collection.txt',
             'jazz-playlist.txt',
             'philosophy-notes.txt',
-            '28980328.jpg'  # Will copy from examples/ - tests invalid date rejection (year 2898)
+            '28980328.jpg'  # Will copy from examples/ (tests year 2898 rejection)
         ],
         'bar': [
-            '20250116-shopping.doc',
-            'insurance-claim.doc',
-            'shoes.png',
-            'something.png',  # Will copy from examples/ if exists (fish photo)
+            'something.png',  # Will copy from examples/ (fish photo)
             'vinyl-records.txt'
         ],
         'baz': [
-            'my-insurance.pdf'
+            'us-webp.pdf'  # Will copy from examples/ (real PDF file)
         ]
     }
     
@@ -1617,32 +1627,6 @@ def create_test_environment():
                     content = "Fishing trip notes from January 1st, 2024. Caught several fish."
                     with open(file_path, 'w') as f:
                         f.write(content)
-                elif file_name == 'something.doc':
-                    content = "This document contains information about fishing techniques."
-                    with open(file_path, 'w') as f:
-                        f.write(content)
-                elif file_name == 'something-else.docx':
-                    # Fallback: Create a simple .docx if not in examples/
-                    try:
-                        import docx as docx_module
-                        doc = docx_module.Document()
-                        doc.add_paragraph("This document is about fishing and outdoor activities.")
-                        doc.save(file_path)
-                    except ImportError:
-                        with open(file_path, 'w') as f:
-                            f.write("Fallback: fishing document")
-                elif file_name == '20250116-shopping.doc':
-                    content = "Shopping list for January 16th, 2025. Need to buy shoes."
-                    with open(file_path, 'w') as f:
-                        f.write(content)
-                elif file_name == 'insurance-claim.doc':
-                    content = "Insurance claim form for property damage."
-                    with open(file_path, 'w') as f:
-                        f.write(content)
-                elif file_name == 'my-insurance.pdf':
-                    content = "Insurance policy document."
-                    with open(file_path, 'w') as f:
-                        f.write(content)
                 elif file_name == 'peggy-lee-concert.txt':
                     content = "Concert notes: Peggy Lee performed 'Is That All There Is?' at the jazz club. Amazing music performance of this philosophical song about life and existence. Her voice and the music were transcendent."
                     with open(file_path, 'w') as f:
@@ -1663,31 +1647,9 @@ def create_test_environment():
                     content = "Philosophy notes: Existentialism and the question 'Is that all there is?' - exploring meaning in life. Philosophy helps us understand existence."
                     with open(file_path, 'w') as f:
                         f.write(content)
-                elif file_name == 'has-text.jpg':
-                    # Fallback: Create a simple test image
-                    try:
-                        from PIL import Image, ImageDraw, ImageFont
-                        img = Image.new('RGB', (400, 300), color='white')
-                        draw = ImageDraw.Draw(img)
-                        try:
-                            font = ImageFont.truetype('/System/Library/Fonts/Helvetica.ttc', 40)
-                        except:
-                            font = ImageFont.load_default()
-                        draw.text((50, 100), "Test Image", fill='black', font=font)
-                        img.save(file_path, 'JPEG')
-                    except:
-                        with open(file_path, 'w') as f:
-                            f.write("placeholder")
-                elif file_name == 'something.gif':
-                    # Fallback: Create a simple test image
-                    try:
-                        from PIL import Image
-                        img = Image.new('RGB', (200, 200), color='blue')
-                        img.save(file_path, 'GIF')
-                    except:
-                        with open(file_path, 'w') as f:
-                            f.write("placeholder")
                 else:
+                    # Generic fallback for any other files not in examples/
+                    # Create simple text placeholder
                     content = f"Test content for {file_name}"
                     with open(file_path, 'w') as f:
                         f.write(content)
