@@ -13,6 +13,10 @@
 
 ---
 
+**Known Issues**: The program uses rsync, which deletes files in a target directory (where it's copying to) which aren't in the source directory (where it's copying from). When deleting on a Google Drive, the effect is to put the files in Trash. This can fill up the drive. 
+
+---
+
 **AI-Generated Code**: This project was created using Cursor AI/ML based on requirements and feedback from the repository owner. All code was AI-generated with human guidance and testing.
 
 ---
@@ -21,7 +25,9 @@
 
 My files had become unmanageable. I had tens of thousands of folders and files distributed across several computers, phones, external drives, and cloud drives, with plenty of duplication. 
 
-At the same time, I realised that the Android file system uses ['soft links'](https://www.redhat.com/en/blog/linking-linux-explained) - folder 'Images' contains links to all image files, which are in several 'real' folders, such as 'Camera'. I thought "why not have devices automatically discover categories like 'Images' and put soft links to files in them?" For example, I might have files all over the place with 'vienna' in their filenames - so I should have a folder called 'vienna' which contains links to all of them. It would take me forever to do this manually, so I asked [the Cursor IDE](https://cursor.com/) to use AI/ML to write a program to do it automatically. This is the result: a Python program that intelligently organizes files using AI/ML-powered dynamic content discovery. It scans directories, learns categories from your actual files, and creates organized soft links by year, type, and discovered content categories. It also does backups, overwriting old files with new ones.
+At the same time, I realised that the Android file system uses ['soft links'](https://www.redhat.com/en/blog/linking-linux-explained) - folder 'Images' contains links to all image files, which are in several 'real' folders, such as 'Camera'. I thought "why not have devices automatically discover categories like 'Images' and put soft links to files in them?" For example, I might have files all over the place with 'vienna' in their filenames - so I should have a folder called 'vienna' which contains links to all of them. If you double-click on one of these links in your favourite File Manager, it opens the real file in the appropriate app for this type of file.
+
+It would take me forever to do this manually, so I asked [the Cursor IDE](https://cursor.com/) to use AI/ML to write a program to do it automatically. This is the result: a Python program that intelligently organizes files using AI/ML-powered dynamic content discovery. It scans directories, learns categories from your files' names and contents, and creates organized soft links by year, type, and discovered content categories. It also does backups, overwriting old files with new ones: this is configurable in a configuration file.
 
 ## 🚀 Quick Start
 
@@ -175,7 +181,7 @@ Automatically organizes by file type:
 - **Folder Synchronization**: Keep folder pairs in sync
 - **Duplicate Detection**: Find and remove duplicate files
 - **Git Version Control**: Track all changes automatically
-- **ProtonDrive Backup**: Background backup with retry logic
+- **Backup**: Background backup to external or cloud drives with retry logic
 - **Robust Error Handling**: Graceful handling of flaky drives
 
 ## 📁 Expected Output
