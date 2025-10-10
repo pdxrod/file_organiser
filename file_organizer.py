@@ -490,27 +490,47 @@ class GitManager:
         """Add all changes and commit with message."""
         try:
             # Add all files
-            subprocess.run(['git', 'add', '-A'], cwd=path, capture_output=True, check=True)
+            result = subprocess.run(
+                ['git', 'add', '-A'], 
+                cwd=path, 
+                capture_output=True, 
+                text=True,
+                check=False  # Don't raise exception, handle errors manually
+            )
+            
+            # Check for git errors (exit code 128 = git repo problem)
+            if result.returncode != 0:
+                if result.returncode == 128:
+                    self.logger.warning(f"Git repository issue in {path} - skipping commit")
+                    self.logger.warning(f"Git error: {result.stderr.strip()}")
+                    self.logger.info("This is common in cloud storage folders (Google Drive, Dropbox)")
+                    return True  # Return True to continue processing
+                else:
+                    self.logger.warning(f"Git add failed in {path}: {result.stderr.strip()}")
+                    return True  # Still return True to not block operations
             
             # Commit
-            subprocess.run(
+            result = subprocess.run(
                 ['git', 'commit', '-m', message],
                 cwd=path,
                 capture_output=True,
-                check=True
+                text=True,
+                check=False
             )
-            self.logger.info(f"Committed changes in {path}: {message}")
-            return True
-        except subprocess.CalledProcessError as e:
-            # git commit returns non-zero if there's nothing to commit
-            if b'nothing to commit' in e.stdout or b'nothing to commit' in e.stderr:
+            
+            if result.returncode == 0:
+                self.logger.info(f"Committed changes in {path}: {message}")
+                return True
+            elif 'nothing to commit' in result.stdout or 'nothing to commit' in result.stderr:
                 self.logger.info(f"No changes to commit in {path}")
                 return True
-            self.logger.error(f"Failed to commit changes in {path}: {e}")
-            return False
+            else:
+                self.logger.warning(f"Git commit issue in {path}: {result.stderr.strip()}")
+                return True  # Return True anyway to not block operations
+                
         except Exception as e:
-            self.logger.error(f"Failed to commit changes in {path}: {e}")
-            return False
+            self.logger.warning(f"Git operation failed in {path}: {e}")
+            return True  # Return True to continue despite git issues
     
     def manage_directory(self, path: Path, operation: str) -> bool:
         """Manage git for a directory before and after changes."""
