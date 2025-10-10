@@ -216,11 +216,18 @@ class DynamicContentAnalyzer:
         keywords = set()
         for word in words:
             # Skip if too short, too long, or is a stop word
-            if len(word) < 3 or len(word) > 20 or word in self.stop_words:
+            # Increased min length from 3 to 4 to avoid meaningless 3-letter combos
+            if len(word) < 4 or len(word) > 20 or word in self.stop_words:
                 continue
             
             # Skip numbers
             if word.isdigit():
+                continue
+            
+            # Skip words that are mostly consonants (random letter combinations)
+            # Good words have at least 30% vowels
+            vowels = sum(1 for c in word if c in 'aeiou')
+            if vowels / len(word) < 0.3:
                 continue
             
             keywords.add(word)
@@ -229,7 +236,8 @@ class DynamicContentAnalyzer:
         for i in range(len(words) - 1):
             w1, w2 = words[i], words[i + 1]
             if w1 not in self.stop_words and w2 not in self.stop_words:
-                if len(w1) >= 3 and len(w2) >= 3:
+                # Increased min length to 4 for consistency
+                if len(w1) >= 4 and len(w2) >= 4:
                     phrase = f"{w1}_{w2}"
                     keywords.add(phrase)
         
@@ -665,7 +673,35 @@ class FolderSynchronizer:
             self.logger.error(f"Source directory {source} does not exist")
             return False
         
-        target.mkdir(parents=True, exist_ok=True)
+        # Check if target drive is accessible (handle offline external drives)
+        try:
+            # Try to access parent volume/drive
+            target_parent = target.parent
+            while target_parent.parent != target_parent and not target_parent.exists():
+                target_parent = target_parent.parent
+            
+            # If parent doesn't exist or isn't writable, the drive is offline
+            if not target_parent.exists():
+                self.logger.warning(f"Target drive offline or not accessible: {target}")
+                self.logger.warning(f"Skipping sync - drive at {target_parent} not found")
+                return False
+            
+            if not os.access(target_parent, os.W_OK):
+                self.logger.warning(f"Target drive not writable: {target}")
+                self.logger.warning(f"Skipping sync - no write access to {target_parent}")
+                return False
+                
+        except Exception as e:
+            self.logger.warning(f"Cannot access target drive for {target}: {e}")
+            return False
+        
+        # Create target directory
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+        except (OSError, PermissionError) as e:
+            self.logger.error(f"Cannot create target directory {target}: {e}")
+            self.logger.warning(f"Skipping sync - target may be on offline drive")
+            return False
         
         # Get sync exclusions from config
         sync_excludes = self.git_manager.config.get('sync_exclude_patterns', [

@@ -76,9 +76,9 @@
     ],
     "ml_content_analysis": {
         "enabled": true,
-        "min_keyword_frequency": 3,
+        "min_keyword_frequency": 10,
         "min_category_size": 5,
-        "max_categories": 50,
+        "max_categories": 20,
         "stop_words_enabled": true
     }
 }
