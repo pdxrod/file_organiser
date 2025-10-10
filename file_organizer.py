@@ -200,6 +200,8 @@ class DynamicContentAnalyzer:
     def extract_keywords_from_text(self, text: str) -> Set[str]:
         """
         Extract meaningful keywords from text using NLP techniques.
+        Extracts words separated by spaces, dashes, underscores, dots.
+        Only alphabetic words 4+ letters.
         """
         if not text:
             return set()
@@ -207,39 +209,43 @@ class DynamicContentAnalyzer:
         # Convert to lowercase
         text = text.lower()
         
-        # Remove special characters but keep alphanumeric and spaces
-        text = re.sub(r'[^a-z0-9\s-]', ' ', text)
+        # Split on common delimiters: spaces, dashes, underscores, dots, commas
+        # This handles filenames like "31-05-18-vienna-shoppe-kirche.jpg"
+        text = re.sub(r'[-_.,/\\()[\]{}]', ' ', text)
         
-        # Split into words
-        words = text.split()
+        # Split into words BEFORE removing numbers (to filter out words containing digits)
+        raw_words = text.split()
+        
+        # Filter: keep only words that are purely alphabetic (reject "ZVOZ31", "1exieieuea")
+        alphabetic_words = [w for w in raw_words if w.isalpha()]
         
         keywords = set()
-        for word in words:
+        for word in alphabetic_words:
             # Skip if too short, too long, or is a stop word
-            # Increased min length from 3 to 4 to avoid meaningless 3-letter combos
-            if len(word) < 4 or len(word) > 20 or word in self.stop_words:
+            # Minimum 5 letters to avoid short common words like 'home', 'thai'
+            if len(word) < 5 or len(word) > 20 or word in self.stop_words:
                 continue
             
-            # Skip numbers
-            if word.isdigit():
+            # Skip words with repeated letters (3+ in a row) like 'meee', 'aaaa'
+            if re.search(r'(.)\1{2,}', word):
                 continue
             
             # Skip words that are mostly consonants (random letter combinations)
-            # Good words have at least 30% vowels
+            # Good words have 30-70% vowels (not too few, not too many)
             vowels = sum(1 for c in word if c in 'aeiou')
-            if vowels / len(word) < 0.3:
+            vowel_ratio = vowels / len(word)
+            if vowel_ratio < 0.3 or vowel_ratio > 0.7:
                 continue
             
             keywords.add(word)
         
-        # Also extract multi-word phrases (bigrams)
-        for i in range(len(words) - 1):
-            w1, w2 = words[i], words[i + 1]
-            if w1 not in self.stop_words and w2 not in self.stop_words:
-                # Increased min length to 4 for consistency
-                if len(w1) >= 4 and len(w2) >= 4:
-                    phrase = f"{w1}_{w2}"
-                    keywords.add(phrase)
+        # Also extract multi-word phrases (bigrams) - only from consecutive words that passed filters
+        for i in range(len(alphabetic_words) - 1):
+            w1, w2 = alphabetic_words[i], alphabetic_words[i + 1]
+            # Both words must have individually passed all filters (be in keywords set)
+            if w1 in keywords and w2 in keywords:
+                phrase = f"{w1}_{w2}"
+                keywords.add(phrase)
         
         return keywords
     
@@ -710,6 +716,23 @@ class FolderSynchronizer:
                 self.logger.warning(f"Target drive not writable: {target}")
                 self.logger.warning(f"Skipping sync - no write access to {target_parent}")
                 return False
+            
+            # Check disk space on target drive
+            max_usage = self.git_manager.config.get('max_drive_usage_percent', 90)
+            try:
+                stat = os.statvfs(target_parent)
+                total = stat.f_blocks * stat.f_frsize
+                free = stat.f_bfree * stat.f_frsize
+                used_percent = ((total - free) / total) * 100
+                
+                if used_percent >= max_usage:
+                    self.logger.warning(f"Target drive {target_parent} is {used_percent:.1f}% full (max: {max_usage}%)")
+                    self.logger.warning(f"Skipping sync to prevent filling drive")
+                    return False
+                else:
+                    self.logger.info(f"Target drive usage: {used_percent:.1f}% (max: {max_usage}%)")
+            except Exception as e:
+                self.logger.debug(f"Could not check disk space: {e}")
                 
         except Exception as e:
             self.logger.warning(f"Cannot access target drive for {target}: {e}")
@@ -1215,12 +1238,14 @@ class EnhancedFileOrganizer:
         Classify file by year.
         Priority: 1) Year in filename, 2) ctime, 3) mtime, 4) atime
         Valid year range: 1752-2035 (Gregorian calendar adoption to near future)
+        
+        Supports European date format (DD-MM-YY) with preference over American (MM-DD-YY).
         """
         years = []
         MIN_YEAR = 1752  # Gregorian calendar adoption in Britain
         MAX_YEAR = 2035  # Reasonable future limit
         
-        # Priority 1: Extract year from filename (YYYYMMDD or YYYY-MM-DD patterns)
+        # Priority 1: Extract year from filename
         filename = file_path.stem  # Without extension
         
         # Pattern 1: YYYYMMDD at start (e.g., 20240101-fishing-trip.txt)
@@ -1235,7 +1260,31 @@ class EnhancedFileOrganizer:
             else:
                 self.logger.debug(f"Rejected year {year} (out of range {MIN_YEAR}-{MAX_YEAR}): {file_path.name}")
         
-        # Pattern 2: YYYY-MM-DD anywhere (e.g., backup-2024-01-01.txt)
+        # Pattern 2: DD-MM-YY or MM-DD-YY at start (e.g., 31-05-18-vienna-shoppe.jpg)
+        # Prefer European format unless day > 12 (must be American)
+        match = re.match(r'^(\d{2})-(\d{2})-(\d{2})', filename)
+        if match:
+            first, second, yy = match.groups()
+            first_int, second_int = int(first), int(second)
+            year_int = 2000 + int(yy) if int(yy) < 50 else 1900 + int(yy)  # 2-digit year conversion
+            
+            # European format (DD-MM-YY): 31-05-18 → May 31, 2018
+            if first_int > 12:  # Must be day (can't be month)
+                years.append(str(year_int))
+                self.logger.debug(f"Found European date {first}-{second}-{yy} → {year_int}: {file_path.name}")
+                return years
+            # American format only if second > 12 (must be day)
+            elif second_int > 12:  # MM-DD-YY format
+                years.append(str(year_int))
+                self.logger.debug(f"Found American date {first}-{second}-{yy} → {year_int}: {file_path.name}")
+                return years
+            # Ambiguous (both <= 12): prefer European (DD-MM-YY)
+            else:
+                years.append(str(year_int))
+                self.logger.debug(f"Found ambiguous date (assuming European) {first}-{second}-{yy} → {year_int}: {file_path.name}")
+                return years
+        
+        # Pattern 3: YYYY-MM-DD anywhere (e.g., backup-2024-01-01.txt)
         match = re.search(r'(\d{4})-\d{2}-\d{2}', filename)
         if match:
             year = match.group(1)
@@ -1247,7 +1296,7 @@ class EnhancedFileOrganizer:
             else:
                 self.logger.debug(f"Rejected year {year} (out of range): {file_path.name}")
         
-        # Pattern 3: YYYY anywhere in filename (e.g., report2024.doc)
+        # Pattern 4: YYYY anywhere in filename (e.g., report2024.doc)
         matches = re.findall(r'\b(\d{4})\b', filename)
         valid_matches = [y for y in matches if MIN_YEAR <= int(y) <= MAX_YEAR]
         if valid_matches:
