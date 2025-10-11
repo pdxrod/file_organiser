@@ -673,6 +673,9 @@ class FolderSynchronizer:
             
             result = subprocess.run(cmd, capture_output=True, text=True)
             
+            # Check rsync exit code
+            # 0 = success, 23 = partial transfer (some files couldn't be transferred but most worked)
+            # 24 = partial transfer due to vanished source files
             if result.returncode == 0:
                 # Parse rsync output for stats
                 if 'Number of regular files transferred:' in result.stdout:
@@ -684,8 +687,23 @@ class FolderSynchronizer:
                 # Commit changes
                 self.git_manager.commit_after_sync(target, f"Synchronized from {source}")
                 return True
+            elif result.returncode in [23, 24]:
+                # Partial success - some files had errors but most synced OK
+                self.logger.warning(f"rsync partial success (exit code {result.returncode})")
+                self.logger.warning(f"Some files couldn't sync (common with FUSE mounts like ProtonDrive)")
+                if 'fchmodat' in result.stderr or 'permission' in result.stderr.lower():
+                    self.logger.info("This is typically harmless - files were copied but permissions couldn't be set")
+                # Show first few lines of error
+                error_lines = result.stderr.split('\n')[:5]
+                for line in error_lines:
+                    if line.strip():
+                        self.logger.warning(f"  {line.strip()}")
+                # Still commit - most files synced successfully
+                self.git_manager.commit_after_sync(target, f"Synchronized from {source} (partial)")
+                return True
             else:
-                self.logger.error(f"rsync failed: {result.stderr}")
+                self.logger.error(f"rsync failed with exit code {result.returncode}")
+                self.logger.error(f"rsync error: {result.stderr[:500]}")
                 return False
                 
         except Exception as e:
