@@ -133,7 +133,7 @@ The organizer **learns categories from YOUR files** - no hardcoded keywords!
 
 - Filename dates override file metadata
 - `20240101-report.txt` goes in `/2024/` even if created in 2025
-- Supports formats: YYYYMMDD, YYYY-MM-DD, YYYY
+- Supports formats: YYYYMMDD, YYYY-MM-DD, YYYY, and even DD-MM-YY
 - Falls back to file creation/modification dates
 
 ### 3. **Test & Production Modes**

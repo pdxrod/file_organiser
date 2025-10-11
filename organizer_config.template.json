@@ -78,7 +78,7 @@
         "enabled": true,
         "min_keyword_frequency": 10,
         "min_category_size": 5,
-        "max_categories": 20,
+        "max_categories": 40,
         "stop_words_enabled": true
     }
 }
