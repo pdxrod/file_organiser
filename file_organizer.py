@@ -150,6 +150,7 @@ class DynamicContentAnalyzer:
         self.min_keyword_freq = self.ml_config.get('min_keyword_frequency', 3)
         self.min_category_size = self.ml_config.get('min_category_size', 5)
         self.max_categories = self.ml_config.get('max_categories', 50)
+        self.min_word_length = self.ml_config.get('min_word_length', 5)  # Configurable minimum word length
         
         # AI models (lazy-loaded)
         self._easyocr_reader = None
@@ -222,8 +223,8 @@ class DynamicContentAnalyzer:
         keywords = set()
         for word in alphabetic_words:
             # Skip if too short, too long, or is a stop word
-            # Minimum 5 letters to avoid short common words like 'home', 'thai'
-            if len(word) < 5 or len(word) > 20 or word in self.stop_words:
+            # Use configurable minimum length (5 in production, 4 in test mode)
+            if len(word) < self.min_word_length or len(word) > 20 or word in self.stop_words:
                 continue
             
             # Skip words with repeated letters (3+ in a row) like 'meee', 'aaaa'
@@ -232,7 +233,8 @@ class DynamicContentAnalyzer:
             
             # Skip words that are mostly consonants (random letter combinations)
             # Good words have 30-70% vowels (not too few, not too many)
-            vowels = sum(1 for c in word if c in 'aeiou')
+            # Count 'y' as a vowel when not at the start
+            vowels = sum(1 for i, c in enumerate(word) if c in 'aeiouy' and not (c == 'y' and i == 0))
             vowel_ratio = vowels / len(word)
             if vowel_ratio < 0.3 or vowel_ratio > 0.7:
                 continue
@@ -244,7 +246,7 @@ class DynamicContentAnalyzer:
             w1, w2 = alphabetic_words[i], alphabetic_words[i + 1]
             # Both words must have individually passed all filters (be in keywords set)
             if w1 in keywords and w2 in keywords:
-                phrase = f"{w1}_{w2}"
+                phrase = f"{w1}-{w2}"  # Use dash for readability
                 keywords.add(phrase)
         
         return keywords
@@ -970,9 +972,17 @@ class EnhancedFileOrganizer:
         self.running = True  # Always set to True initially (even for --scan-once)
         self.logger = self._setup_logging()
         
-        # Validate and resolve drive placeholders (skip in test mode)
+        # PRODUCTION MODE: Strict validation (exit on any issues)
         if not test_mode:
-            self._validate_and_resolve_drives()
+            self._validate_config_structure()
+            self._check_unconfigured_drives()
+            self._resolve_drive_placeholders()
+        else:
+            # TEST MODE: Just note if config exists but don't require it
+            if os.path.exists(self.config_file):
+                print(f"Note: Found {self.config_file}, but test mode uses auto-generated test config")
+            else:
+                print(f"Note: {self.config_file} not found (OK in test mode - using auto-generated config)")
         
         # Initialize managers
         self.git_manager = GitManager(self.logger, self.config)
@@ -1011,34 +1021,132 @@ class EnhancedFileOrganizer:
                 with open(self.config_file, 'r') as f:
                     return json.load(f)
             except Exception as e:
-                print(f"ERROR: Could not load config file {self.config_file}: {e}")
-                sys.exit(1)
+                # In test mode, just warn and return empty dict
+                if self.test_mode:
+                    print(f"Warning: Could not load {self.config_file}: {e}")
+                    print("Continuing with auto-generated test config...")
+                    return {}
+                else:
+                    # In production mode, fail hard
+                    print(f"ERROR: Could not load config file {self.config_file}: {e}")
+                    sys.exit(1)
         else:
-            print("\n" + "=" * 70)
-            print("ERROR: Configuration file not found!")
-            print("=" * 70)
-            print(f"\nThe file '{self.config_file}' does not exist.")
-            
-            # Check if template exists
-            template_file = "organizer_config.template.json"
-            if os.path.exists(template_file):
-                print("\nTo get started:")
-                print(f"  1. Copy the template:  cp {template_file} {self.config_file}")
-                print(f"  2. Edit your config:   nano {self.config_file}")
-                print("  3. Update the 'drives' section with your actual paths")
-                print(f"  4. Run the program again")
+            # Config file doesn't exist
+            if self.test_mode:
+                # Test mode: OK, will use auto-generated config
+                return {}
             else:
-                print(f"\nPlease create {self.config_file} with your drive configurations.")
-            
-            print("\n" + "=" * 70 + "\n")
-            sys.exit(1)
+                # Production mode: Required!
+                print("\n" + "=" * 70)
+                print("ERROR: Configuration file not found!")
+                print("=" * 70)
+                print(f"\nThe file '{self.config_file}' does not exist.")
+                
+                # Check if template exists
+                template_file = "organizer_config.template.json"
+                if os.path.exists(template_file):
+                    print("\nTo get started:")
+                    print(f"  1. Copy the template:  cp {template_file} {self.config_file}")
+                    print(f"  2. Edit your config:   nano {self.config_file}")
+                    print("  3. Update the 'drives' section with your actual paths")
+                    print(f"  4. Run the program again")
+                else:
+                    print(f"\nPlease create {self.config_file} with your drive configurations.")
+                
+                print("\n" + "=" * 70 + "\n")
+                sys.exit(1)
     
-    def _validate_and_resolve_drives(self):
-        """Validate drive configuration and resolve placeholders."""
+    def _validate_config_structure(self):
+        """Validate configuration file structure before processing (production mode only)."""
+        # Skip validation in test mode
+        if self.test_mode:
+            return
+        
+        errors = []
+        warnings = []
+        
+        # Check required top-level keys
+        required_keys = ['source_folders', 'exclude_folders', 'output_base']
+        for key in required_keys:
+            if key not in self.config:
+                errors.append(f"Missing required key: '{key}'")
+        
+        # Validate source_folders
+        if 'source_folders' in self.config:
+            if not isinstance(self.config['source_folders'], list):
+                errors.append("'source_folders' must be a list")
+            elif len(self.config['source_folders']) == 0:
+                warnings.append("'source_folders' is empty - no folders will be scanned")
+        
+        # Validate sync_pairs structure
+        if 'sync_pairs' in self.config:
+            if not isinstance(self.config['sync_pairs'], list):
+                errors.append("'sync_pairs' must be a list")
+            else:
+                for i, pair in enumerate(self.config['sync_pairs']):
+                    if not isinstance(pair, dict):
+                        errors.append(f"sync_pairs[{i}] must be a dictionary")
+                        continue
+                    
+                    # Check if it's just a comment entry (only has 'comment' keys)
+                    keys = [k for k in pair.keys() if not k.startswith('comment')]
+                    if len(keys) == 0:
+                        # Just a comment, skip validation
+                        continue
+                    
+                    # Otherwise, must have source and target
+                    if 'source' not in pair:
+                        errors.append(f"sync_pairs[{i}] missing 'source' (has: {list(pair.keys())})")
+                    if 'target' not in pair:
+                        errors.append(f"sync_pairs[{i}] missing 'target' (has: {list(pair.keys())})")
+        
+        # Validate ml_content_analysis if present
+        if 'ml_content_analysis' in self.config:
+            ml_config = self.config['ml_content_analysis']
+            if not isinstance(ml_config, dict):
+                errors.append("'ml_content_analysis' must be a dictionary")
+        
+        # Print errors and exit if validation failed
+        if errors or warnings:
+            print("\n" + "=" * 70)
+            print("CONFIG VALIDATION ERRORS")
+            print("=" * 70)
+            print(f"\nConfiguration file: {self.config_file}\n")
+            
+            if errors:
+                print("ERRORS (must fix):")
+                for error in errors:
+                    print(f"  ✗ {error}")
+                print()
+            
+            if warnings:
+                print("WARNINGS:")
+                for warning in warnings:
+                    print(f"  ⚠ {warning}")
+                print()
+            
+            print("Please fix the configuration file and try again.")
+            print("See organizer_config.template.json for a valid example.")
+            print("=" * 70 + "\n")
+            
+            if errors:
+                sys.exit(1)
+    
+    def _check_unconfigured_drives(self):
+        """Check for UNCONFIGURED drive placeholders (production mode only)."""
+        # Skip validation in test mode - test mode doesn't need drives configured
+        if self.test_mode:
+            return
+        
         # Check if drives are configured
         if 'drives' not in self.config:
+            print("\n" + "=" * 70)
             print("ERROR: 'drives' section missing from config file!")
+            print("=" * 70)
+            print(f"\nConfiguration file: {self.config_file}")
             print("Please add a 'drives' section to your config file.")
+            print("\nSee organizer_config.template.json for an example.")
+            print("=" * 70 + "\n")
             sys.exit(1)
         
         drives = self.config['drives']
@@ -1047,15 +1155,16 @@ class EnhancedFileOrganizer:
         # Check for unconfigured drives
         for drive_name, drive_path in drives.items():
             if isinstance(drive_path, str) and ('UNCONFIGURED' in drive_path or drive_path.strip() == ''):
-                unconfigured.append(drive_name)
+                unconfigured.append((drive_name, drive_path))
         
         if unconfigured:
             print("\n" + "=" * 70)
             print("ERROR: Drive configuration required!")
             print("=" * 70)
-            print(f"\nThe following drives are not configured in {self.config_file}:")
-            for drive in unconfigured:
-                print(f"  - {drive}: {drives[drive]}")
+            print(f"\nConfiguration file: {self.config_file}")
+            print(f"\nThe following drives are not configured:\n")
+            for drive_name, drive_path in unconfigured:
+                print(f"  ✗ {drive_name}: {drive_path}")
             print("\nPlease edit the config file and replace the placeholder paths")
             print("with your actual drive paths.")
             print("\nExample:")
@@ -1063,9 +1172,12 @@ class EnhancedFileOrganizer:
             print('  "GOOGLE_DRIVE": "/Users/yourname/Google Drive"')
             print('  "BACKUP_DRIVE": "/Volumes/BackupDrive"')
             print('  "EXTERNAL_DRIVE": "/Volumes/YourDrive"')
-            print("\n" + "=" * 70)
+            print("\nThen run the program again.")
+            print("=" * 70 + "\n")
             sys.exit(1)
-        
+    
+    def _resolve_drive_placeholders(self):
+        """Resolve drive placeholders in config paths (production mode only)."""
         # Resolve drive placeholders in config
         self._resolve_placeholders('source_folders')
         self._resolve_placeholders('exclude_folders')
@@ -1237,13 +1349,13 @@ class EnhancedFileOrganizer:
         """
         Classify file by year.
         Priority: 1) Year in filename, 2) ctime, 3) mtime, 4) atime
-        Valid year range: 1752-2035 (Gregorian calendar adoption to near future)
+        Valid year range: 1753-2099 (Gregorian calendar in Britain started September 14 1752)
         
         Supports European date format (DD-MM-YY) with preference over American (MM-DD-YY).
         """
         years = []
-        MIN_YEAR = 1752  # Gregorian calendar adoption in Britain
-        MAX_YEAR = 2035  # Reasonable future limit
+        MIN_YEAR = 1753  # After Gregorian calendar adoption in Britain
+        MAX_YEAR = 2099  # Reasonable future limit
         
         # Priority 1: Extract year from filename
         filename = file_path.stem  # Without extension
@@ -1699,6 +1811,11 @@ class EnhancedFileOrganizer:
         completed_pairs = self.progress.get('sync_pairs_completed', [])
         
         for i, sync_pair in enumerate(sync_pairs):
+            # Skip comment-only entries (defensive check - should be caught by validation)
+            if 'source' not in sync_pair or 'target' not in sync_pair:
+                self.logger.debug(f"Skipping sync_pairs[{i}] - comment-only entry")
+                continue
+            
             # Skip already completed pairs
             if i in completed_pairs:
                 source = sync_pair['source']
@@ -2050,7 +2167,8 @@ def get_test_config():
             "enabled": True,
             "min_keyword_frequency": 2,  # Lower for test mode  
             "min_category_size": 2,  # Lower for test mode - we have small dataset
-            "max_categories": 15,  # Reduced max to keep it focused
+            "max_categories": 30,  # Increased to see more test categories
+            "min_word_length": 4,  # Reduced to 4 for test mode (allows 'peggy' and even 'jazz')
             "stop_words_enabled": True,
             "use_clip": True  # Enable CLIP in test mode to demonstrate fish detection
         }
