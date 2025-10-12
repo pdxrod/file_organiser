@@ -26,19 +26,72 @@ case "$1" in
         ;;
     
     stop)
-        echo "Stopping File Organizer..."
+        echo "Stopping all File Organizer processes..."
+        STOPPED=0
+        
+        # First, try to stop daemon (using PID file)
         if [ -f "$PID_FILE" ]; then
             PID=$(cat "$PID_FILE")
             if ps -p "$PID" > /dev/null 2>&1; then
+                echo "Stopping daemon (PID: $PID)..."
                 kill "$PID"
+                sleep 1
+                # Force kill if still running
+                if ps -p "$PID" > /dev/null 2>&1; then
+                    kill -9 "$PID" 2>/dev/null
+                fi
                 rm "$PID_FILE"
-                echo "File Organizer stopped"
+                echo "  ✓ Daemon stopped"
+                STOPPED=1
             else
-                echo "File Organizer is not running"
                 rm "$PID_FILE"
             fi
+        fi
+        
+        # Find and stop ALL file_organizer.py processes
+        # This catches --scan-once, test mode, stuck rsync, or orphaned processes
+        PIDS=$(pgrep -f "python.*file_organizer.py" 2>/dev/null || true)
+        if [ -n "$PIDS" ]; then
+            for PID in $PIDS; do
+                # Check if process is still running and is file_organizer
+                if ps -p "$PID" > /dev/null 2>&1; then
+                    CMDLINE=$(ps -p "$PID" -o command= 2>/dev/null || true)
+                    if echo "$CMDLINE" | grep -q "file_organizer.py"; then
+                        echo "Stopping file_organizer (PID: $PID)..."
+                        kill "$PID" 2>/dev/null
+                        sleep 1
+                        # Force kill if still running
+                        if ps -p "$PID" > /dev/null 2>&1; then
+                            kill -9 "$PID" 2>/dev/null
+                            echo "  ✓ Force stopped (was stuck)"
+                        else
+                            echo "  ✓ Stopped gracefully"
+                        fi
+                        STOPPED=1
+                    fi
+                fi
+            done
+        fi
+        
+        # Also kill any stuck rsync child processes
+        RSYNC_PIDS=$(pgrep -f "rsync.*GoogleDrive|rsync.*ProtonDrive|rsync.*PASSPORT4" 2>/dev/null || true)
+        if [ -n "$RSYNC_PIDS" ]; then
+            for PID in $RSYNC_PIDS; do
+                if ps -p "$PID" > /dev/null 2>&1; then
+                    echo "Stopping stuck rsync (PID: $PID)..."
+                    kill -9 "$PID" 2>/dev/null
+                    echo "  ✓ Killed stuck rsync"
+                    STOPPED=1
+                fi
+            done
+        fi
+        
+        if [ $STOPPED -eq 0 ]; then
+            echo "No File Organizer processes found"
         else
-            echo "File Organizer is not running"
+            echo ""
+            echo "All File Organizer processes stopped"
+            echo "Progress saved - restart with: python3 file_organizer.py -R --scan-once"
         fi
         ;;
     
