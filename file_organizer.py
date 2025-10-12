@@ -693,8 +693,7 @@ class FolderSynchronizer:
                             self.logger.info(f"rsync: {line.strip()}")
                 
                 self.logger.info(f"rsync completed successfully")
-                # Commit changes
-                self.git_manager.commit_after_sync(target, f"Synchronized from {source}")
+                # No automatic git operations - git repos sync like regular folders
                 return True
             elif result.returncode in [23, 24]:
                 # Partial success - some files had errors but most synced OK
@@ -707,8 +706,7 @@ class FolderSynchronizer:
                 for line in error_lines:
                     if line.strip():
                         self.logger.warning(f"  {line.strip()}")
-                # Still commit - most files synced successfully
-                self.git_manager.commit_after_sync(target, f"Synchronized from {source} (partial)")
+                # No automatic git operations
                 return True
             else:
                 self.logger.error(f"rsync failed with exit code {result.returncode}")
@@ -786,9 +784,7 @@ class FolderSynchronizer:
         if use_rsync and shutil.which('rsync'):
             return self.sync_with_rsync(source, target, sync_mode, sync_excludes)
         
-        # Manage git before changes
-        self.git_manager.manage_directory(target, f"sync from {source}")
-        
+        # Fallback to manual Python sync (if rsync not available)
         try:
             for source_item in source.rglob('*'):
                 # Skip excluded paths
@@ -829,8 +825,7 @@ class FolderSynchronizer:
                         except Exception as e:
                             self.logger.error(f"Failed to copy {source_item} to {target_item}: {e}")
             
-            # Commit changes
-            self.git_manager.commit_after_sync(target, f"Synchronized from {source}")
+            # No automatic git operations
             return True
             
         except Exception as e:
