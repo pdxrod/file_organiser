@@ -2241,6 +2241,33 @@ def get_test_config():
     }
 
 
+def check_already_running():
+    """Check if file_organizer is already running. Returns (is_running, pids)."""
+    try:
+        # Get all Python processes running file_organizer.py
+        result = subprocess.run(
+            ['ps', 'auxw'],
+            capture_output=True,
+            text=True
+        )
+        
+        lines = result.stdout.split('\n')
+        pids = []
+        current_pid = os.getpid()
+        
+        for line in lines:
+            if 'file_organizer.py' in line and 'grep' not in line:
+                parts = line.split()
+                if len(parts) >= 2:
+                    pid = int(parts[1])
+                    if pid != current_pid:  # Don't count ourselves
+                        pids.append(pid)
+        
+        return len(pids) > 0, pids
+    except Exception:
+        return False, []
+
+
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
@@ -2259,8 +2286,50 @@ def main():
                        help='Only remove duplicates (production mode only)')
     parser.add_argument('--create-test', action='store_true',
                        help='Create test environment and exit')
+    parser.add_argument('--force', action='store_true',
+                       help='Kill any existing file_organizer processes before starting')
     
     args = parser.parse_args()
+    
+    # Check if already running (unless creating test environment)
+    if not args.create_test:
+        is_running, existing_pids = check_already_running()
+        if is_running:
+            print("\n" + "=" * 70)
+            print("WARNING: File Organizer is already running!")
+            print("=" * 70)
+            print(f"\nFound {len(existing_pids)} existing process(es):")
+            for pid in existing_pids:
+                try:
+                    result = subprocess.run(
+                        ['ps', '-p', str(pid), '-o', 'etime=,command='],
+                        capture_output=True,
+                        text=True
+                    )
+                    info = result.stdout.strip()
+                    print(f"  PID {pid}: {info}")
+                except Exception:
+                    print(f"  PID {pid}")
+            
+            print("\nTo stop existing processes:")
+            print("  ./manage_organizer.sh stop")
+            print("\nOr use --force to kill them automatically:")
+            print(f"  python3 file_organizer.py {' '.join(sys.argv[1:])} --force")
+            print("=" * 70 + "\n")
+            
+            if not args.force:
+                sys.exit(1)
+            else:
+                # Force mode: kill existing processes
+                print("--force flag detected: Stopping existing processes...")
+                for pid in existing_pids:
+                    try:
+                        os.kill(pid, signal.SIGTERM)
+                        print(f"  Stopped PID {pid}")
+                    except Exception as e:
+                        print(f"  Could not stop PID {pid}: {e}")
+                time.sleep(2)
+                print("Continuing with startup...\n")
     
     # Handle test environment creation
     if args.create_test:
