@@ -1845,8 +1845,47 @@ class EnhancedFileOrganizer:
             target = Path(sync_pair['target'])
             
             if source.exists():
-                self.logger.info(f"Syncing ({i+1}/{len(sync_pairs)}): {source} -> {target}")
-                self.folder_sync.sync_directories(source, target, sync_mode='newer')
+                # Check if we should chunk this sync (large folders)
+                chunk_threshold = self.config.get('sync_chunk_subfolders', 30)
+                
+                if source.is_dir():
+                    # Count immediate subfolders
+                    try:
+                        subfolders = [d for d in source.iterdir() if d.is_dir() and not d.name.startswith('.')]
+                        num_subfolders = len(subfolders)
+                        
+                        if num_subfolders >= chunk_threshold:
+                            self.logger.info(f"Large folder detected: {source} has {num_subfolders} subfolders")
+                            self.logger.info(f"Syncing in chunks (one subfolder at a time for better progress tracking)")
+                            
+                            # Sync each subfolder individually
+                            for j, subfolder in enumerate(subfolders):
+                                if hasattr(self, 'running') and not self.running:
+                                    return
+                                    
+                                subfolder_target = target / subfolder.name
+                                self.logger.info(f"  Chunk {j+1}/{num_subfolders}: {subfolder.name}")
+                                self.folder_sync.sync_directories(subfolder, subfolder_target, sync_mode='newer')
+                            
+                            # Sync root level files (if any)
+                            root_files = [f for f in source.iterdir() if f.is_file()]
+                            if root_files:
+                                self.logger.info(f"  Syncing {len(root_files)} root-level files...")
+                                # Use rsync for root files only
+                                self.folder_sync.sync_directories(source, target, sync_mode='newer')
+                        else:
+                            # Normal sync for smaller folders
+                            self.logger.info(f"Syncing ({i+1}/{len(sync_pairs)}): {source} -> {target}")
+                            self.folder_sync.sync_directories(source, target, sync_mode='newer')
+                    except Exception as e:
+                        self.logger.error(f"Error analyzing source folder {source}: {e}")
+                        # Fall back to normal sync
+                        self.logger.info(f"Syncing ({i+1}/{len(sync_pairs)}): {source} -> {target}")
+                        self.folder_sync.sync_directories(source, target, sync_mode='newer')
+                else:
+                    # Not a directory, sync normally
+                    self.logger.info(f"Syncing ({i+1}/{len(sync_pairs)}): {source} -> {target}")
+                    self.folder_sync.sync_directories(source, target, sync_mode='newer')
                 
                 # Mark this pair as completed
                 completed_pairs.append(i)
