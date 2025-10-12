@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 """
 File Organizer using AI/ML
 
@@ -1374,15 +1374,61 @@ class EnhancedFileOrganizer:
         Valid year range: 1753-2099 (Gregorian calendar in Britain started September 14 1752)
         
         Supports European date format (DD-MM-YY) with preference over American (MM-DD-YY).
+        Also supports month names: 11-jul-2020, July-11-2020, July-11-20
         """
         years = []
         MIN_YEAR = 1753  # After Gregorian calendar adoption in Britain
         MAX_YEAR = 2099  # Reasonable future limit
         
-        # Priority 1: Extract year from filename
-        filename = file_path.stem  # Without extension
+        # Month name mapping (abbreviated and full, case-insensitive)
+        month_names = {
+            'jan': 1, 'january': 1,
+            'feb': 2, 'february': 2,
+            'mar': 3, 'march': 3,
+            'apr': 4, 'april': 4,
+            'may': 5,
+            'jun': 6, 'june': 6,
+            'jul': 7, 'july': 7,
+            'aug': 8, 'august': 8,
+            'sep': 9, 'sept': 9, 'september': 9,
+            'oct': 10, 'october': 10,
+            'nov': 11, 'november': 11,
+            'dec': 12, 'december': 12
+        }
         
-        # Pattern 1: YYYYMMDD at start (e.g., 20240101-fishing-trip.txt)
+        # Priority 1: Extract year from filename
+        filename = file_path.stem.lower()  # Without extension, lowercase for month matching
+        
+        # Pattern 1: Month names with day and year (e.g., 11-jul-2020, July-11-2020, July-11-20)
+        # Format: DD-MMM-YYYY or DD-MMM-YY (e.g., 11-jul-2020, 11-jul-20)
+        match = re.search(r'(\d{1,2})-([a-z]+)-(\d{2,4})', filename)
+        if match:
+            day, month_str, year = match.groups()
+            if month_str in month_names:
+                year_int = int(year)
+                # Handle 2-digit years
+                if len(year) == 2:
+                    year_int = 2000 + year_int if year_int < 50 else 1900 + year_int
+                if MIN_YEAR <= year_int <= MAX_YEAR:
+                    years.append(str(year_int))
+                    self.logger.debug(f"Found month-name date {day}-{month_str}-{year} → {year_int}: {file_path.name}")
+                    return years
+        
+        # Format: Month-DD-YYYY or Month-DD-YY (e.g., July-11-2020, July-11-20)
+        match = re.search(r'([a-z]+)-(\d{1,2})-(\d{2,4})', filename)
+        if match:
+            month_str, day, year = match.groups()
+            if month_str in month_names:
+                year_int = int(year)
+                # Handle 2-digit years
+                if len(year) == 2:
+                    year_int = 2000 + year_int if year_int < 50 else 1900 + year_int
+                if MIN_YEAR <= year_int <= MAX_YEAR:
+                    years.append(str(year_int))
+                    self.logger.debug(f"Found month-name date {month_str}-{day}-{year} → {year_int}: {file_path.name}")
+                    return years
+        
+        # Pattern 2: YYYYMMDD at start (e.g., 20240101-fishing-trip.txt)
         match = re.match(r'^(\d{4})\d{2}\d{2}', filename)
         if match:
             year = match.group(1)
@@ -1394,7 +1440,7 @@ class EnhancedFileOrganizer:
             else:
                 self.logger.debug(f"Rejected year {year} (out of range {MIN_YEAR}-{MAX_YEAR}): {file_path.name}")
         
-        # Pattern 2: DD-MM-YY or MM-DD-YY at start (e.g., 31-05-18-vienna-shoppe.jpg)
+        # Pattern 3: DD-MM-YY or MM-DD-YY at start (e.g., 31-05-18-vienna-shoppe.jpg)
         # Prefer European format unless day > 12 (must be American)
         match = re.match(r'^(\d{2})-(\d{2})-(\d{2})', filename)
         if match:
@@ -1418,7 +1464,7 @@ class EnhancedFileOrganizer:
                 self.logger.debug(f"Found ambiguous date (assuming European) {first}-{second}-{yy} → {year_int}: {file_path.name}")
                 return years
         
-        # Pattern 3: YYYY-MM-DD anywhere (e.g., backup-2024-01-01.txt)
+        # Pattern 4: YYYY-MM-DD anywhere (e.g., backup-2024-01-01.txt)
         match = re.search(r'(\d{4})-\d{2}-\d{2}', filename)
         if match:
             year = match.group(1)
@@ -1430,7 +1476,7 @@ class EnhancedFileOrganizer:
             else:
                 self.logger.debug(f"Rejected year {year} (out of range): {file_path.name}")
         
-        # Pattern 4: YYYY anywhere in filename (e.g., report2024.doc)
+        # Pattern 5: YYYY anywhere in filename (e.g., report2024.doc)
         matches = re.findall(r'\b(\d{4})\b', filename)
         valid_matches = [y for y in matches if MIN_YEAR <= int(y) <= MAX_YEAR]
         if valid_matches:
@@ -2309,7 +2355,7 @@ def main():
             print("\nTo stop existing processes:")
             print("  ./manage_organizer.sh stop")
             print("\nOr use --force to kill them automatically:")
-            print(f"  python3 file_organizer.py {' '.join(sys.argv[1:])} --force")
+            print(f"  python file_organizer.py {' '.join(sys.argv[1:])} --force")
             print("=" * 70 + "\n")
             
             if not args.force:
