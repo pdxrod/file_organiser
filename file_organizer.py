@@ -667,11 +667,20 @@ class FolderSynchronizer:
             cmd.append(f'{source}/')
             cmd.append(f'{target}/')
             
-            # Run rsync
-            self.logger.info(f"Running rsync with checksum comparison")
+            # Run rsync with timeout to prevent infinite hangs
+            timeout_minutes = self.git_manager.config.get('sync_timeout_minutes', 30)
+            timeout_seconds = timeout_minutes * 60
+            
+            self.logger.info(f"Running rsync with checksum comparison (timeout: {timeout_minutes} min)")
             self.logger.info(f"Excluding: {', '.join(sync_excludes)}")
             
-            result = subprocess.run(cmd, capture_output=True, text=True)
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_seconds)
+            except subprocess.TimeoutExpired:
+                self.logger.error(f"rsync timed out after {timeout_minutes} minutes")
+                self.logger.warning(f"This sync is taking too long - skipping to prevent hanging")
+                self.logger.info(f"Consider: 1) Increasing sync_timeout_minutes, 2) Reducing folder size, 3) Using chunking")
+                return False
             
             # Check rsync exit code
             # 0 = success, 23 = partial transfer (some files couldn't be transferred but most worked)
