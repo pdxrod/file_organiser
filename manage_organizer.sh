@@ -19,7 +19,7 @@ case "$1" in
                 exit 1
             fi
         fi
-        nohup python3 "$SCRIPT_NAME" --REAL > /dev/null 2>&1 &
+        nohup python "$SCRIPT_NAME" --REAL > /dev/null 2>&1 &
         echo $! > "$PID_FILE"
         echo "File Organizer started in PRODUCTION MODE (PID: $(cat $PID_FILE))"
         echo "Log file: $LOG_FILE"
@@ -96,7 +96,7 @@ case "$1" in
         else
             echo ""
             echo "All File Organizer processes stopped"
-            echo "Progress saved - restart with: python3 file_organizer.py -R --scan-once"
+            echo "Progress saved - restart with: python file_organizer.py -R --scan-once"
         fi
         ;;
     
@@ -151,22 +151,22 @@ case "$1" in
     
     test)
         echo "Running single scan in TEST MODE..."
-        python3 "$SCRIPT_NAME" --scan-once
+        python "$SCRIPT_NAME" --scan-once
         ;;
     
     test-real)
         echo "Running single scan in PRODUCTION MODE..."
-        python3 "$SCRIPT_NAME" --REAL --scan-once
+        python "$SCRIPT_NAME" --REAL --scan-once
         ;;
     
     sync)
         echo "Running folder synchronization only (PRODUCTION MODE)..."
-        python3 "$SCRIPT_NAME" --REAL --sync-only
+        python "$SCRIPT_NAME" --REAL --sync-only
         ;;
     
     dedupe)
         echo "Running duplicate detection and removal (PRODUCTION MODE)..."
-        python3 "$SCRIPT_NAME" --REAL --dedupe-only
+        python "$SCRIPT_NAME" --REAL --dedupe-only
         ;;
     
     *)
