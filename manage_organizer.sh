@@ -174,7 +174,7 @@ case "$1" in
         echo ""
         echo "Background Daemon Commands:"
         echo "  start     - Start organizer as background daemon (PRODUCTION MODE)"
-        echo "  stop      - Stop the background daemon"
+        echo "  stop      - Stop all file_organizer.py processes"
         echo "  restart   - Restart the background daemon"
         echo "  status    - Check if daemon is running"
         echo "  log       - Tail the log file (for background daemon only)"
