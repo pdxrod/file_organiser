@@ -45,6 +45,9 @@
         "deps",
         "ebin",
         ".git",
+        ".hg",
+        ".svn",
+        ".cvs",
         "__pycache__",
         ".pytest_cache",
         ".mypy_cache",
@@ -67,7 +70,14 @@
         "Photos Library.photoslibrary",
         ".photoslibrary",
         "iPhoto Library",
-        "Lightroom"
+        "Lightroom",
+        ".bundle",
+        "vendor",
+        "bundle",
+        "priv/static",
+        ".gradle",
+        ".m2",
+        "tmp/cache"
     ],
     "exclude_extensions": [
         ".beam",
@@ -115,6 +125,9 @@
     "sync_exclude_patterns": [
         "node_modules",
         ".git",
+        ".hg",
+        ".svn",
+        ".cvs",
         "__pycache__",
         ".DS_Store",
         "*.pyc",
@@ -148,6 +161,7 @@
         "tmp/cache",
         "*.beam"
     ],
+    "comment_vcs_sync": "Version control folders (.git, .hg, .svn, .cvs) excluded - they're huge and don't sync well to cloud storage",
     "max_drive_usage_percent": 90,
     "sync_chunk_subfolders": 30,
     "sync_timeout_minutes": 60,
