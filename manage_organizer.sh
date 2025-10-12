@@ -49,15 +49,19 @@ case "$1" in
         fi
         
         # Find and stop ALL file_organizer.py processes
-        # This catches --scan-once, test mode, stuck rsync, or orphaned processes
-        PIDS=$(pgrep -f "python.*file_organizer.py" 2>/dev/null || true)
+        # Use ps + grep instead of pgrep for better pattern matching
+        PIDS=$(ps auxw | grep -i "file_organizer.py" | grep -v grep | awk '{print $2}' || true)
         if [ -n "$PIDS" ]; then
             for PID in $PIDS; do
-                # Check if process is still running and is file_organizer
+                # Double-check it's really a file_organizer process
                 if ps -p "$PID" > /dev/null 2>&1; then
                     CMDLINE=$(ps -p "$PID" -o command= 2>/dev/null || true)
                     if echo "$CMDLINE" | grep -q "file_organizer.py"; then
                         echo "Stopping file_organizer (PID: $PID)..."
+                        # Get process start time to show how long it's been running
+                        ELAPSED=$(ps -p "$PID" -o etime= 2>/dev/null | xargs || echo "unknown")
+                        echo "  Running for: $ELAPSED"
+                        
                         kill "$PID" 2>/dev/null
                         sleep 1
                         # Force kill if still running
@@ -73,12 +77,13 @@ case "$1" in
             done
         fi
         
-        # Also kill any stuck rsync child processes
-        RSYNC_PIDS=$(pgrep -f "rsync.*GoogleDrive|rsync.*ProtonDrive|rsync.*PASSPORT4" 2>/dev/null || true)
+        # Also kill any stuck rsync child processes related to our sync operations
+        RSYNC_PIDS=$(ps auxw | grep "rsync" | grep -E "GoogleDrive|ProtonDrive|PASSPORT4" | grep -v grep | awk '{print $2}' || true)
         if [ -n "$RSYNC_PIDS" ]; then
             for PID in $RSYNC_PIDS; do
                 if ps -p "$PID" > /dev/null 2>&1; then
-                    echo "Stopping stuck rsync (PID: $PID)..."
+                    ELAPSED=$(ps -p "$PID" -o etime= 2>/dev/null | xargs || echo "unknown")
+                    echo "Stopping stuck rsync (PID: $PID, running: $ELAPSED)..."
                     kill -9 "$PID" 2>/dev/null
                     echo "  ✓ Killed stuck rsync"
                     STOPPED=1
@@ -102,16 +107,36 @@ case "$1" in
         ;;
     
     status)
+        RUNNING=0
+        
+        # Check daemon (PID file)
         if [ -f "$PID_FILE" ]; then
             PID=$(cat "$PID_FILE")
             if ps -p "$PID" > /dev/null 2>&1; then
-                echo "File Organizer is running (PID: $PID)"
-                echo "Log file: $LOG_FILE"
+                echo "Daemon is running (PID: $PID)"
+                echo "  Log file: $LOG_FILE"
+                RUNNING=1
             else
-                echo "File Organizer is not running (stale PID file)"
+                echo "Daemon PID file exists but process not running (stale)"
                 rm "$PID_FILE"
             fi
-        else
+        fi
+        
+        # Check for any other file_organizer processes
+        PIDS=$(ps auxw | grep -i "file_organizer.py" | grep -v grep | awk '{print $2}' || true)
+        if [ -n "$PIDS" ]; then
+            for PID in $PIDS; do
+                if ps -p "$PID" > /dev/null 2>&1; then
+                    ELAPSED=$(ps -p "$PID" -o etime= 2>/dev/null | xargs || echo "unknown")
+                    CMDLINE=$(ps -p "$PID" -o command= 2>/dev/null | cut -c 1-80 || echo "")
+                    echo "Process running (PID: $PID, elapsed: $ELAPSED)"
+                    echo "  Command: $CMDLINE"
+                    RUNNING=1
+                fi
+            done
+        fi
+        
+        if [ $RUNNING -eq 0 ]; then
             echo "File Organizer is not running"
         fi
         ;;
