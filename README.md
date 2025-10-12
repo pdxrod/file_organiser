@@ -198,12 +198,22 @@ test/
     ├── 2025/              # Files from 2025
     ├── documents/         # All document files
     ├── images/            # All image files
-    ├── insurance/         # Discovered category
-    ├── fishing/           # Discovered category
-    └── shopping/          # Discovered category
+    ├── davis/             # Discovered: Miles Davis (from music files)
+    ├── ella/              # Discovered: Ella Fitzgerald
+    ├── ella-fitzgerald/   # Discovered: Full name (bigram)
+    ├── existence/         # Discovered: Philosophy content
+    ├── fitzgerald/        # Discovered: From music collection
+    ├── life/              # Discovered: Philosophy theme
+    ├── miles/             # Discovered: Miles Davis
+    ├── miles-davis/       # Discovered: Full name (bigram)
+    ├── music/             # Discovered: Music-related content
+    ├── notes/             # Discovered: Note files
+    ├── peggy/             # Discovered: Peggy Lee (OCR from image + text)
+    ├── people/            # Discovered: CLIP vision detected people
+    └── something/         # Discovered: From filenames
 ```
 
-Each folder contains soft links to the actual files wherever they are.
+Each folder contains soft links to the actual files wherever they are. Categories are discovered automatically by analyzing file content, filenames, and even OCR text from images!
 
 ## 🧠 How Dynamic Content Discovery Works
 

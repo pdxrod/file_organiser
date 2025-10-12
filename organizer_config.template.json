@@ -135,6 +135,8 @@
         ".DocumentRevisions-V100"
     ],
     "max_drive_usage_percent": 90,
+    "sync_chunk_subfolders": 30,
+    "comment_chunking": "Folders with 30+ subfolders will sync one subfolder at a time (better for large dev folders)",
     "sync_pairs": [
         {
             "comment": "Example: Sync from one location to another - you can have multiple sync pairs",
