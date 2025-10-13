@@ -122,6 +122,8 @@
     "flaky_volume_retries": 3,
     "retry_delay": 5,
     "use_rsync": true,
+    "rsync_checksum_mode": "timestamp",
+    "comment_rsync_mode": "checksum = thorough but SLOW (20+ hours first sync). timestamp = fast (minutes for unchanged files). Recommended: timestamp",
     "sync_exclude_patterns": [
         "node_modules",
         ".git",
