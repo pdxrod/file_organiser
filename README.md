@@ -25,9 +25,11 @@
 
 My files had become unmanageable. I had tens of thousands of folders and files distributed across several computers, phones, external drives, and cloud drives, with plenty of duplication. 
 
-At the same time, I realised that the Android file system uses ['soft links'](https://www.redhat.com/en/blog/linking-linux-explained) - folder 'Images' contains links to all image files, which are in several 'real' folders, such as 'Camera'. I thought "why not have devices automatically discover categories like 'Images' and put soft links to files in them?" For example, I might have files all over the place with 'vienna' in their filenames - so I should have a folder called 'vienna' which contains links to all of them. If you double-click on one of these links in your favourite File Manager, it opens the real file in the appropriate app for this type of file.
+At the same time, I realised that the Android file system uses ['soft links'](https://www.redhat.com/en/blog/linking-linux-explained) - folder 'Images' contains links to all image files, which are in several 'real' folders, such as 'Camera'. Find out more about file systems here: [Your iPhone is Lying to You About Files...](https://www.youtube.com/watch?v=tnPAhVxsPHE) - Laurie Kirk on YouTube.
 
-It would take me forever to do this manually, so I asked [the Cursor IDE](https://cursor.com/) to use AI/ML to write a program to do it automatically. This is the result: a Python program that intelligently organizes files using AI/ML-powered dynamic content discovery. It scans directories, learns categories from your files' names and contents, and creates organized soft links by year, type, and discovered content categories. It also does backups, overwriting old files with new ones: this is configurable in a configuration file.
+I thought "why not have devices automatically discover categories like 'Images' and put soft links to files in them?" For example, I might have files all over the place with 'vienna' in their filenames - so I should have a folder called 'vienna' which contains links to all of them. If you double-click on one of these links in your favourite File Manager, it opens the real file in the appropriate app for this type of file.
+
+It would take me forever to do this manually, so I asked [the Cursor IDE](https://cursor.com/) to use AI/ML to write a program to do it automatically. This is the result: a Python program that intelligently organizes files using AI/ML-powered dynamic content discovery. It scans directories, learns categories from your files' names and contents, and creates organized soft links by year, type, and discovered content categories. It also does backups.
 
 ## 🚀 Quick Start
 
@@ -207,7 +209,7 @@ test/
     ├── miles/             # Discovered: Miles Davis
     ├── miles-davis/       # Discovered: Full name (bigram)
     ├── music/             # Discovered: Music-related content
-    ├── notes/             # Discovered: Note files
+    ├── notes/             # Discovered: Notes files
     ├── peggy/             # Discovered: Peggy Lee (OCR from image + text)
     ├── people/            # Discovered: CLIP vision detected people
     └── something/         # Discovered: From filenames
