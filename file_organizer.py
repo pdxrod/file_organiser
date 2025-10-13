@@ -646,18 +646,24 @@ class FolderSynchronizer:
         return False
     
     def sync_with_rsync(self, source: Path, target: Path, sync_mode: str, sync_excludes: List[str]) -> bool:
-        """Fast synchronization using rsync with checksum comparison."""
+        """Fast synchronization using rsync."""
         try:
-            self.logger.info(f"Using rsync (checksum mode) to sync {source} -> {target}")
+            rsync_mode = self.git_manager.config.get('rsync_checksum_mode', 'checksum')
+            self.logger.info(f"Using rsync ({rsync_mode} mode) to sync {source} -> {target}")
             
             # Build rsync command
             cmd = [
                 'rsync',
                 '-avh',  # archive, verbose, human-readable
-                '--checksum',  # Compare by content checksum, not timestamp!
                 '--delete',  # Remove files in target that aren't in source
                 '--stats',  # Show statistics
             ]
+            
+            # Add checksum flag if configured (thorough but SLOW)
+            # rsync_mode already retrieved above in logger
+            if rsync_mode == 'checksum':
+                cmd.append('--checksum')
+            # else: Use timestamp comparison (rsync default - much faster for unchanged files)
             
             # Add exclusions
             for exclude in sync_excludes:
@@ -671,8 +677,7 @@ class FolderSynchronizer:
             timeout_minutes = self.git_manager.config.get('sync_timeout_minutes', 30)
             timeout_seconds = timeout_minutes * 60
             
-            self.logger.info(f"Running rsync with checksum comparison (timeout: {timeout_minutes} min)")
-            self.logger.info(f"Excluding: {', '.join(sync_excludes)}")
+            self.logger.info(f"Timeout: {timeout_minutes} min | Excluding: {', '.join(sync_excludes[:5])}{'...' if len(sync_excludes) > 5 else ''}")
             
             try:
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_seconds)
