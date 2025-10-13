@@ -168,9 +168,14 @@
     "comment_chunking": "Large folders sync in chunks. Each chunk times out after 60 min to prevent infinite hangs.",
     "sync_pairs": [
         {
-            "comment": "Example: Sync from one location to another - you can have multiple sync pairs",
-            "source": "EXTERNAL_DRIVE_1/MyFolder",
-            "target": "MAIN_DRIVE/MyFolder"
+            "comment": "Example: Sync from one location to another",
+            "source": "MAIN_DRIVE/MyFolder",
+            "target": "EXTERNAL_DRIVE_1/MyFolder"
+        }, 
+        {
+            "comment": "You can have multiple sync pairs",
+            "source": "MAIN_DRIVE/MyOtherFolder",
+            "target": "EXTERNAL_DRIVE_2/MyOtherFolder"
         }
     ],
     "ml_content_analysis": {
