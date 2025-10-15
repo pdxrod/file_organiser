@@ -1038,6 +1038,10 @@ class EnhancedFileOrganizer:
             'code': ['.py', '.js', '.html', '.css', '.java', '.cpp', '.c', '.php'],
         }
         
+        # Track soft links per file to prevent over-categorization
+        self.file_link_counts = defaultdict(int)  # file_path -> count of links created
+        self.max_links_per_file = self.config.get('max_soft_links_per_file', 6)
+        
         # Track processed files
         self.processed_files = set()
         
@@ -1783,6 +1787,14 @@ class EnhancedFileOrganizer:
     def create_soft_link(self, source_path: Path, target_folder: str, target_name: str) -> bool:
         """Create a soft link from source to target folder."""
         try:
+            # Check if we've already created too many links for this file
+            file_key = str(source_path)
+            current_count = self.file_link_counts[file_key]
+            
+            if current_count >= self.max_links_per_file:
+                self.logger.debug(f"Skipping link for {source_path.name} - already has {current_count} links (max: {self.max_links_per_file})")
+                return False
+            
             target_dir = Path(self.config['output_base']) / target_folder
             target_dir.mkdir(parents=True, exist_ok=True)
             
@@ -1808,7 +1820,10 @@ class EnhancedFileOrganizer:
             relative_source = os.path.relpath(source_path, target_dir)
             target_path.symlink_to(relative_source)
             
-            self.logger.debug(f"Created soft link: {target_path} -> {relative_source}")
+            # Increment link count for this file
+            self.file_link_counts[file_key] += 1
+            
+            self.logger.debug(f"Created soft link: {target_path} -> {relative_source} (file now has {self.file_link_counts[file_key]} links)")
             return True
             
         except Exception as e:
