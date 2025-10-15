@@ -43,6 +43,7 @@ import json
 import re
 from collections import defaultdict
 import queue
+import concurrent.futures
 
 # Third-party imports for AI/ML content analysis
 try:
@@ -664,6 +665,17 @@ class FolderSynchronizer:
             if rsync_mode == 'checksum':
                 cmd.append('--checksum')
             # else: Use timestamp comparison (rsync default - much faster for unchanged files)
+
+            # Optionally rely on size-only for change detection (even faster, fewer stats calls)
+            if self.git_manager.config.get('rsync_size_only', False):
+                cmd.append('--size-only')
+
+            # Add additional args to reduce metadata ops on cloud/FUSE targets if configured
+            # Example: --omit-dir-times --no-perms --no-group --no-owner --delete-after
+            additional_args = self.git_manager.config.get('rsync_additional_args', []) or []
+            for extra in additional_args:
+                if isinstance(extra, str) and extra.strip():
+                    cmd.append(extra.strip())
             
             # Add exclusions
             for exclude in sync_excludes:
@@ -1928,14 +1940,32 @@ class EnhancedFileOrganizer:
                             self.logger.info(f"Large folder detected: {source} has {num_subfolders} subfolders")
                             self.logger.info(f"Syncing in chunks (one subfolder at a time for better progress tracking)")
                             
-                            # Sync each subfolder individually
-                            for j, subfolder in enumerate(subfolders):
-                                if hasattr(self, 'running') and not self.running:
-                                    return
-                                    
-                                subfolder_target = target / subfolder.name
-                                self.logger.info(f"  Chunk {j+1}/{num_subfolders}: {subfolder.name}")
-                                self.folder_sync.sync_directories(subfolder, subfolder_target, sync_mode='newer')
+                            # Sync subfolders with limited concurrency
+                            max_workers = max(1, int(self.config.get('sync_chunk_concurrency', 2)))
+                            self.logger.info(f"Chunked concurrency: {max_workers}")
+                            
+                            def sync_one(subfolder_path: Path):
+                                try:
+                                    if hasattr(self, 'running') and not self.running:
+                                        return False
+                                    subfolder_target_local = target / subfolder_path.name
+                                    return self.folder_sync.sync_directories(subfolder_path, subfolder_target_local, sync_mode='newer')
+                                except Exception as e:
+                                    self.logger.error(f"Chunk sync failed for {subfolder_path}: {e}")
+                                    return False
+
+                            completed = 0
+                            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                                future_to_sub = {executor.submit(sync_one, sf): sf for sf in subfolders}
+                                for future in concurrent.futures.as_completed(future_to_sub):
+                                    sf = future_to_sub[future]
+                                    completed += 1
+                                    try:
+                                        ok = future.result()
+                                        status = "OK" if ok else "FAIL"
+                                        self.logger.info(f"  Chunk {completed}/{num_subfolders}: {sf.name} [{status}]")
+                                    except Exception as e:
+                                        self.logger.error(f"  Chunk {completed}/{num_subfolders}: {sf.name} [ERROR: {e}]")
                             
                             # Sync root level files (if any)
                             root_files = [f for f in source.iterdir() if f.is_file()]
