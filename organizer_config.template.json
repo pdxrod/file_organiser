@@ -180,6 +180,8 @@
             "target": "EXTERNAL_DRIVE_2/MyOtherFolder"
         }
     ],
+    "max_soft_links_per_file": 6,
+    "comment_soft_links": "Limit how many categories a single file can be linked to. Prevents over-categorization (e.g., 12 links to same file).",
     "ml_content_analysis": {
         "enabled": true,
         "min_keyword_frequency": 10,
