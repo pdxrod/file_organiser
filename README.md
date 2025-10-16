@@ -180,11 +180,13 @@ Automatically organizes by file type:
 
 ### 5. **Advanced Features** (Production Mode)
 
-- **Folder Synchronization**: Keep folder pairs in sync
+- **Folder Synchronization**: Keep folder pairs in sync with rsync
+- **Concurrent Chunked Sync**: Large folders sync in parallel chunks for faster progress
+- **Cloud Storage Optimized**: Special flags for Google Drive, ProtonDrive, and other FUSE mounts
 - **Duplicate Detection**: Find and remove duplicate files
 - **Git Version Control**: Track all changes automatically
-- **Backup**: Background backup to external or cloud drives with retry logic
-- **Robust Error Handling**: Graceful handling of flaky drives
+- **Background Backup**: Backup to external or cloud drives with retry logic
+- **Robust Error Handling**: Graceful handling of flaky drives and timeouts
 
 ## 📁 Expected Output
 
@@ -289,9 +291,10 @@ Edit `organizer_config.json`:
 {
     "ml_content_analysis": {
         "enabled": true,
-        "min_keyword_frequency": 3,
+        "min_keyword_frequency": 8,
         "min_category_size": 5,
-        "max_categories": 50,
+        "max_categories": 250,
+        "min_word_length": 5,
         "stop_words_enabled": true
     },
     "sync_pairs": [
@@ -304,7 +307,20 @@ Edit `organizer_config.json`:
         "/path/to/backup1",
         "/path/to/backup2"
     ],
-    "proton_drive_path": "/path/to/protondrive"
+    "backup_drive_path": "/path/to/backupdrive",
+    "use_rsync": true,
+    "rsync_checksum_mode": "timestamp",
+    "rsync_size_only": true,
+    "rsync_additional_args": [
+        "--omit-dir-times",
+        "--no-perms", 
+        "--no-group",
+        "--no-owner",
+        "--delete-after"
+    ],
+    "sync_chunk_subfolders": 10,
+    "sync_chunk_concurrency": 3,
+    "sync_timeout_minutes": 180
 }
 ```
 
@@ -315,6 +331,11 @@ Edit `organizer_config.json`:
 - **`output_base`**: Where to create soft link folders
 - **`enable_content_analysis`**: Enable/disable ML content discovery
 - **`ml_content_analysis`**: Tune category discovery thresholds
+- **`use_rsync`**: Use rsync for fast folder synchronization
+- **`rsync_size_only`**: Only compare file sizes (faster for cloud storage)
+- **`rsync_additional_args`**: Extra rsync flags to reduce FUSE overhead
+- **`sync_chunk_concurrency`**: Number of parallel sync operations
+- **`sync_timeout_minutes`**: Timeout for large folder syncs
 
 ## 🔧 Tuning Category Discovery
 
@@ -332,7 +353,8 @@ Edit `organizer_config.json`:
 "ml_content_analysis": {
     "min_keyword_frequency": 2,     // Decrease
     "min_category_size": 3,          // Decrease
-    "max_categories": 100            // Increase
+    "max_categories": 250,           // Increase (current default)
+    "min_word_length": 4             // Allow shorter words
 }
 ```
 
@@ -492,17 +514,36 @@ $ tail -f ~/.file_organizer.log
 
 ### Folder Synchronization
 
-Keep two folders in sync:
+Keep two folders in sync with optimized rsync:
 
 ```json
 "enable_folder_sync": true,
+"use_rsync": true,
+"rsync_checksum_mode": "timestamp",
+"rsync_size_only": true,
+"rsync_additional_args": [
+    "--omit-dir-times",
+    "--no-perms",
+    "--no-group", 
+    "--no-owner",
+    "--delete-after"
+],
 "sync_pairs": [
     {
         "source": "/source/folder",
         "target": "/target/folder"
     }
-]
+],
+"sync_chunk_subfolders": 10,
+"sync_chunk_concurrency": 3,
+"sync_timeout_minutes": 180
 ```
+
+**Performance Notes:**
+- `rsync_size_only: true` - Much faster for cloud storage (Google Drive, ProtonDrive)
+- `rsync_additional_args` - Reduces FUSE metadata overhead
+- `sync_chunk_concurrency: 3` - Sync multiple subfolders in parallel
+- `sync_timeout_minutes: 180` - 3-hour timeout for large folders
 
 ### Duplicate Detection
 
@@ -522,26 +563,34 @@ Track all changes with Git:
 "git_email": "your.email@example.com"
 ```
 
-### ProtonDrive Backup
+### Background Backup
 
-Background backup with retry logic:
+Background backup with retry logic and cloud storage support:
 
 ```json
-"enable_proton_backup": true,
-"proton_drive_path": "/path/to/protondrive",
+"enable_background_backup": true,
+"backup_drive_path": "/path/to/backupdrive",
 "backup_directories": [
     "/path/to/important/folder"
 ]
 ```
+
+**Supported Backup Targets:**
+- External drives (USB, Thunderbolt)
+- Cloud storage mounts (Google Drive, ProtonDrive, Dropbox)
+- Network drives (SMB, NFS)
+- Any mounted filesystem
 
 ## 🎉 What Makes This Special
 
 1. **No Hardcoded Categories** - Learns from YOUR files
 2. **Smart Date Handling** - Filename dates override metadata
 3. **Test & Production Modes** - Safe experimentation
-4. **Portable** - Works anywhere, no hardcoded paths
-5. **ML-Powered** - Discovers patterns in your files
-6. **Comprehensive** - Handles edge cases gracefully
+4. **Cloud Storage Optimized** - Special handling for Google Drive, ProtonDrive, etc.
+5. **Concurrent Sync** - Large folders sync in parallel chunks
+6. **ML-Powered** - Discovers patterns in your files
+7. **Comprehensive** - Handles edge cases gracefully
+8. **Portable** - Works anywhere, no hardcoded paths
 
 ## 📞 Support
 
