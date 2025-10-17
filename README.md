@@ -13,25 +13,34 @@
 
 ---
 
-**Known Issues**: The program uses rsync, which deletes files in a target directory (where it's copying to) which aren't in the source directory (where it's copying from). When deleting on a Google Drive, the effect is to put the files in Trash. This can fill up the drive. 
+## 🖥️ Desktop App (Recommended)
+
+**The easiest way to use File Organizer is with the desktop app!**
+
+### Launch the Desktop App
+```bash
+./manage_organizer.sh gui
+```
+
+The desktop app provides:
+- **Visual controls** - Start/stop the organizer with simple buttons
+- **Mode selection** - Choose test mode, production mode, daemon mode, etc. with checkboxes
+- **Live log viewer** - See what's happening in real-time
+- **File tree browser** - Browse your organized files visually
+- **Cross-platform** - Works on Mac, Linux, and Windows
+
+### What the Desktop App Does
+
+The desktop app gives you a friendly interface to:
+- **Test Mode** - Safely test the organizer without making changes
+- **Production Mode** - Run the full organizer with your real files
+- **Daemon Mode** - Run continuously in the background
+- **Sync Only** - Just synchronize folders between drives
+- **Dedupe Only** - Just find and remove duplicate files
 
 ---
 
-**AI-Generated Code**: This project was created using Cursor AI/ML based on requirements and feedback from the repository owner. All code was AI-generated with human guidance and testing.
-
----
-
-**The purpose of this project** 
-
-My files had become unmanageable. I had tens of thousands of folders and files distributed across several computers, phones, external drives, and cloud drives, with plenty of duplication. 
-
-At the same time, I realised that the Android file system uses ['soft links'](https://www.redhat.com/en/blog/linking-linux-explained) - folder 'Images' contains links to all image files, which are in several 'real' folders, such as 'Camera'. Find out more about file systems here: [Your iPhone is Lying to You About Files...](https://www.youtube.com/watch?v=tnPAhVxsPHE) - Laurie Kirk on YouTube.
-
-I thought "why not have devices automatically discover categories like 'Images' and put soft links to files in them?" For example, I might have files all over the place with 'vienna' in their filenames - so I should have a folder called 'vienna' which contains links to all of them. If you double-click on one of these links in your favourite File Manager, it opens the real file in the appropriate app for this type of file.
-
-It would take me forever to do this manually, so I asked [the Cursor IDE](https://cursor.com/) to use AI/ML to write a program to do it automatically. This is the result: a Python program that intelligently organizes files using AI/ML-powered dynamic content discovery. It scans directories, learns categories from your files' names and contents, and creates organized soft links by year, type, and discovered content categories. It also does backups.
-
-## 🚀 Quick Start
+## 🚀 Quick Start (Desktop App)
 
 ### Requirements
 
@@ -54,30 +63,22 @@ brew install tesseract poppler
 apt-get install tesseract-ocr poppler-utils
 ```
 
-### 2. Run in Test Mode (Safe)
-
-The script will automatically create test directories and sample files:
+### 2. Launch the Desktop App
 
 ```bash
-# Single scan of test/ directory
-python file_organizer.py --scan-once
-
-# Check the results
-ls -la test/organized/
+# Start the desktop app
+./manage_organizer.sh gui
 ```
 
-**Test Mode Features:**
-- Creates `test/` directory with sample folders (foo, bar, baz)
-- Creates sample files automatically
-- Organizes into `test/organized/`
-- Safe to experiment - completely isolated
-- No configuration needed
+The desktop app will open with a friendly interface where you can:
+- Select **Test Mode** to safely experiment
+- Choose **Production Mode** when ready for real files
+- Pick **Daemon Mode** to run continuously
+- Use **Sync Only** or **Dedupe Only** for specific tasks
 
-### 3. Run in Production Mode
+### 3. Configure for Production (Optional)
 
-**⚠️ IMPORTANT: Test first, then configure carefully!**
-
-First, create your personal configuration:
+If you want to use the desktop app with your real files, first create a configuration:
 
 ```bash
 # Copy the template
@@ -87,7 +88,7 @@ cp organizer_config.template.json organizer_config.json
 nano organizer_config.json  # or use your favorite editor
 ```
 
-Edit the `"drives"` section of `organizer_config.json` with your actual paths:
+Edit the `"drives"` section with your actual paths:
 
 ```json
 {
@@ -103,14 +104,43 @@ Edit the `"drives"` section of `organizer_config.json` with your actual paths:
 }
 ```
 
-Then run:
+---
 
+## 💻 Command Line Interface (For Advanced Users)
+
+**Note: The desktop app is recommended for most users. The command line is for advanced users who prefer terminal-based control.**
+
+### Test Mode (Safe)
+```bash
+# Single scan of test/ directory
+python file_organizer.py --scan-once
+
+# Check the results
+ls -la test/organized/
+```
+
+### Production Mode
 ```bash
 # Single scan (safe, review first)
 python file_organizer.py --REAL --scan-once
 
 # Start daemon mode (runs continuously)
 python file_organizer.py --REAL
+```
+
+### Management Script
+```bash
+# Background daemon commands
+./manage_organizer.sh start    # Start daemon
+./manage_organizer.sh stop     # Stop daemon
+./manage_organizer.sh status   # Check status
+./manage_organizer.sh log      # View logs
+
+# Interactive commands
+./manage_organizer.sh test     # Test mode
+./manage_organizer.sh test-real # Production mode
+./manage_organizer.sh sync     # Sync only
+./manage_organizer.sh dedupe   # Dedupe only
 ```
 
 ## 🎯 Key Features
@@ -593,10 +623,11 @@ Background backup with retry logic and cloud storage support:
 ## 📞 Support
 
 **Before asking for help:**
-1. Check the logs: `tail -100 ~/.file_organizer.log`
-2. Review configuration: `cat organizer_config.json`
-3. Test mode first: `python file_organizer.py --scan-once`
-4. Verify paths are absolute and exist
+1. **Use the desktop app** - It shows logs and status visually
+2. Check the logs: `tail -100 ~/.file_organizer.log` or use the desktop app's log viewer
+3. Review configuration: `cat organizer_config.json`
+4. Test mode first: Use "Test Mode" in the desktop app or `python file_organizer.py --scan-once`
+5. Verify paths are absolute and exist
 
 ## 📜 License
 

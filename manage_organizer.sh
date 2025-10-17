@@ -168,10 +168,14 @@ case "$1" in
         echo "Running duplicate detection and removal (PRODUCTION MODE)..."
         python "$SCRIPT_NAME" --REAL --dedupe-only
         ;;
-    
+
+    gui)
+        echo "Starting File Organizer Desktop App..."
+        python "$SCRIPT_DIR/desktop_app.py"
+        ;;
 
     *)
-        echo "Usage: $0 {start|stop|restart|status|log|test|test-real|sync|dedupe}"
+        echo "Usage: $0 {start|stop|restart|status|log|test|test-real|sync|dedupe|gui}"
         echo ""
         echo "Background Daemon Commands:"
         echo "  start     - Start organizer as background daemon (PRODUCTION MODE)"
@@ -185,6 +189,7 @@ case "$1" in
         echo "  test-real - Run single scan (PRODUCTION MODE) - interactive"
         echo "  sync      - Synchronize folders only (PRODUCTION MODE) - interactive"
         echo "  dedupe    - Remove duplicates only (PRODUCTION MODE) - interactive"
+        echo "  gui       - Launch desktop GUI application"
         echo ""
         echo "Note: Interactive commands show output directly. Background daemon"
         echo "      logs to ~/.file_organizer.log (use 'log' command to monitor)."
