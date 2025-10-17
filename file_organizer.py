@@ -1201,17 +1201,26 @@ class EnhancedFileOrganizer:
         # Check for drives referencing themselves or being nested
         if 'drives' in config and isinstance(config['drives'], dict):
             drives = config['drives']
-            drive_paths = []
+            drive_paths: List[Tuple[str, str]] = []
             for drive_name, drive_path in drives.items():
-                if isinstance(drive_path, str) and drive_path and not 'UNCONFIGURED' in drive_path:
-                    drive_paths.append((drive_name, drive_path))
-            
-            # Check for nested drives
-            for drive_name, drive_path in drive_paths:
-                for other_name, other_path in drive_paths:
-                    if drive_name != other_name:
-                        if drive_path.startswith(other_path + '/') or other_path.startswith(drive_path + '/'):
-                            warnings.append(f"Drive '{drive_name}' ({drive_path}) is nested within '{other_name}' ({other_path})")
+                if isinstance(drive_path, str) and drive_path and 'UNCONFIGURED' not in drive_path:
+                    try:
+                        resolved = str(Path(drive_path).expanduser().resolve())
+                    except Exception:
+                        resolved = str(Path(drive_path).expanduser())
+                    # Normalize with trailing separator to avoid prefix false-positives
+                    drive_paths.append((drive_name, resolved.rstrip('/')))
+
+            # Check for nested drives (unidirectional)
+            for i, (name_a, path_a) in enumerate(drive_paths):
+                for j, (name_b, path_b) in enumerate(drive_paths):
+                    if i == j:
+                        continue
+                    # A is nested in B when A != B and A starts with B + '/'
+                    if path_a != path_b and (path_a + '/').startswith(path_b.rstrip('/') + '/'):
+                        warnings.append(
+                            f"Drive '{name_a}' ({path_a}) is nested within '{name_b}' ({path_b})"
+                        )
         
         # Check for source_folders that are in exclude_folders
         if 'source_folders' in config and 'exclude_folders' in config:
@@ -1237,12 +1246,18 @@ class EnhancedFileOrganizer:
                     if output_resolved.startswith(source_resolved):
                         errors.append(f"output_base '{output_base}' is inside source folder '{source}' - this will cause infinite recursion")
             
-            # Check if output_base is in any drive
+            # Check if output_base is in any drive (after resolving/normalizing)
             if 'drives' in config and isinstance(config['drives'], dict):
                 for drive_name, drive_path in config['drives'].items():
-                    if isinstance(drive_path, str) and drive_path and not 'UNCONFIGURED' in drive_path:
-                        if output_resolved.startswith(drive_path):
-                            warnings.append(f"output_base '{output_base}' is inside drive '{drive_name}' ({drive_path})")
+                    if isinstance(drive_path, str) and drive_path and 'UNCONFIGURED' not in drive_path:
+                        try:
+                            drive_resolved = str(Path(drive_path).expanduser().resolve())
+                        except Exception:
+                            drive_resolved = str(Path(drive_path).expanduser())
+                        if (output_resolved.rstrip('/') + '/').startswith(drive_resolved.rstrip('/') + '/'):
+                            warnings.append(
+                                f"output_base '{output_base}' is inside drive '{drive_name}' ({drive_resolved})"
+                            )
         
         # Check for backup_drive_path conflicts
         if 'backup_drive_path' in config:
@@ -2680,6 +2695,10 @@ def main():
                        help='Create test environment and exit')
     parser.add_argument('--force', action='store_true',
                        help='Kill any existing file_organizer processes before starting')
+    parser.add_argument('--no-daemon', action='store_true',
+                       help='Do not background the process in production mode (foreground logging)')
+    # Internal flag used after relaunching as a background process to suppress console output
+    parser.add_argument('--internal-daemon', action='store_true', help=argparse.SUPPRESS)
     
     args = parser.parse_args()
     
@@ -2731,16 +2750,17 @@ def main():
     # Determine mode
     production_mode = args.REAL
     
-    if production_mode:
+    if production_mode and not args.internal_daemon:
         print("=" * 70)
         print("PRODUCTION MODE - Operating on your entire file system")
         print("=" * 70)
         config_file = args.config or 'organizer_config.json'
     else:
-        print("=" * 70)
-        print("TEST MODE - Operating on test/ directory")
-        print("Run with --REAL or -R for production mode")
-        print("=" * 70)
+        if not args.internal_daemon:
+            print("=" * 70)
+            print("TEST MODE - Operating on test/ directory")
+            print("Run with --REAL or -R for production mode")
+            print("=" * 70)
         
         # Create test environment if it doesn't exist
         test_dir = Path('test')
@@ -2752,6 +2772,19 @@ def main():
         # In test mode, still require organizer_config.json for educational setup
         config_file = args.config or 'organizer_config.json'
     
+    # In production mode, if not a one-shot scan and not explicitly disabled, daemonize
+    if production_mode and not args.scan_once and not args.no_daemon and not args.internal_daemon:
+        try:
+            background_args = [sys.executable, __file__] + [a for a in sys.argv[1:] if a != '--force'] + ['--internal-daemon']
+            subprocess.Popen(background_args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, start_new_session=True)
+            print("Started File Organizer in background (daemon mode).")
+            print("View logs:   ./manage_organizer.sh log")
+            print("Stop daemon: ./manage_organizer.sh stop")
+            return
+        except Exception as e:
+            print(f"Failed to start in background: {e}")
+            # Fall through and run in foreground
+
     # Create organizer
     organizer = EnhancedFileOrganizer(config_file, test_mode=not production_mode)
     
