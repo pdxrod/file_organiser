@@ -169,37 +169,9 @@ case "$1" in
         python "$SCRIPT_NAME" --REAL --dedupe-only
         ;;
     
-    dashboard)
-        HOST="127.0.0.1"
-        PORT="8765"
-        echo "Starting dashboard at http://$HOST:$PORT/ ..."
-        # Start UI server in background
-        nohup python -m uvicorn ui.server:app --host "$HOST" --port "$PORT" >/dev/null 2>&1 &
-        UI_PID=$!
-        echo "UI server PID: $UI_PID"
-        # Try to open browser (macOS 'open', Linux 'xdg-open', Windows 'start')
-        URL="http://$HOST:$PORT/"
-        if command -v open >/dev/null 2>&1; then
-            (sleep 1; open "$URL") &
-        elif command -v xdg-open >/dev/null 2>&1; then
-            (sleep 1; xdg-open "$URL") &
-        elif command -v start >/dev/null 2>&1; then
-            (sleep 1; start "$URL") &
-        else
-            echo "Open this URL in your browser: $URL"
-        fi
-        ;;
-
-    up)
-        # Start organizer daemon then launch dashboard
-        "$0" start || true
-        # Small delay to let daemon initialize
-        sleep 1
-        "$0" dashboard
-        ;;
 
     *)
-        echo "Usage: $0 {start|stop|restart|status|log|dashboard|up|test|test-real|sync|dedupe}"
+        echo "Usage: $0 {start|stop|restart|status|log|test|test-real|sync|dedupe}"
         echo ""
         echo "Background Daemon Commands:"
         echo "  start     - Start organizer as background daemon (PRODUCTION MODE)"
@@ -209,8 +181,6 @@ case "$1" in
         echo "  log       - Tail the log file (for background daemon only)"
         echo ""
         echo "Interactive Commands (see output in terminal):"
-        echo "  dashboard - Launch local web UI (http://127.0.0.1:8765/)"
-        echo "  up        - Start organizer daemon and open the dashboard"
         echo "  test      - Run single scan (TEST MODE) - interactive"
         echo "  test-real - Run single scan (PRODUCTION MODE) - interactive"
         echo "  sync      - Synchronize folders only (PRODUCTION MODE) - interactive"
