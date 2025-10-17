@@ -190,8 +190,16 @@ case "$1" in
         fi
         ;;
 
+    up)
+        # Start organizer daemon then launch dashboard
+        "$0" start || true
+        # Small delay to let daemon initialize
+        sleep 1
+        "$0" dashboard
+        ;;
+
     *)
-        echo "Usage: $0 {start|stop|restart|status|log|dashboard|test|test-real|sync|dedupe}"
+        echo "Usage: $0 {start|stop|restart|status|log|dashboard|up|test|test-real|sync|dedupe}"
         echo ""
         echo "Background Daemon Commands:"
         echo "  start     - Start organizer as background daemon (PRODUCTION MODE)"
@@ -202,6 +210,7 @@ case "$1" in
         echo ""
         echo "Interactive Commands (see output in terminal):"
         echo "  dashboard - Launch local web UI (http://127.0.0.1:8765/)"
+        echo "  up        - Start organizer daemon and open the dashboard"
         echo "  test      - Run single scan (TEST MODE) - interactive"
         echo "  test-real - Run single scan (PRODUCTION MODE) - interactive"
         echo "  sync      - Synchronize folders only (PRODUCTION MODE) - interactive"
