@@ -184,7 +184,7 @@ class FileOrganizerApp:
         # Check if organizer is running
         success, stdout, stderr = self.run_command(f"bash {self.manage_script} status")
         
-        if success and "running" in stdout.lower():
+        if success and "is running" in stdout.lower():
             self.organizer_running = True
             self.status_label.config(text="Status: Running", foreground="green")
             
@@ -299,31 +299,43 @@ class FileOrganizerApp:
         for item in self.tree.get_children():
             self.tree.delete(item)
         
-        # Find organized folder
+        # Determine which organized folder to show based on mode
         organized_path = None
-        try:
-            # Try to read config to find output_base
-            config_path = self.script_dir / "organizer_config.json"
-            if config_path.exists():
-                with open(config_path, 'r') as f:
-                    config = json.load(f)
-                    output_base = config.get('output_base', '')
-                    if output_base:
-                        organized_path = Path(output_base)
-        except:
-            pass
         
-        # Fallback to common locations
-        if not organized_path or not organized_path.exists():
-            possible_paths = [
-                Path.home() / "organized",
-                self.script_dir / "test" / "organized",
-                Path.home() / ".file_organizer" / "organized"
-            ]
-            for path in possible_paths:
-                if path.exists():
-                    organized_path = path
-                    break
+        # Check if we're in test mode (test mode checkbox is checked)
+        if self.test_mode_var.get() and not self.real_mode_var.get():
+            # Test mode - show test/organized
+            test_organized = self.script_dir / "test" / "organized"
+            if test_organized.exists():
+                organized_path = test_organized
+            else:
+                self.tree.insert("", "end", text="Test organized folder not found", values=("",))
+                return
+        else:
+            # Production mode - find the actual organized folder
+            try:
+                # Try to read config to find output_base
+                config_path = self.script_dir / "organizer_config.json"
+                if config_path.exists():
+                    with open(config_path, 'r') as f:
+                        config = json.load(f)
+                        output_base = config.get('output_base', '')
+                        if output_base:
+                            organized_path = Path(output_base)
+            except:
+                pass
+            
+            # Fallback to common locations
+            if not organized_path or not organized_path.exists():
+                possible_paths = [
+                    Path.home() / "organized",
+                    self.script_dir / "test" / "organized",
+                    Path.home() / ".file_organizer" / "organized"
+                ]
+                for path in possible_paths:
+                    if path.exists():
+                        organized_path = path
+                        break
         
         if not organized_path or not organized_path.exists():
             self.tree.insert("", "end", text="No organized folder found", values=("",))
