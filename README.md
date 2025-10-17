@@ -87,9 +87,7 @@ cp organizer_config.template.json organizer_config.json
 nano organizer_config.json  # or use your favorite editor
 ```
 
-**Note:** `organizer_config.json` is gitignored, so your personal paths won't be committed to version control.
-
-Edit the `"drives"` section with your actual paths:
+Edit the `"drives"` section of `organizer_config.json` with your actual paths:
 
 ```json
 {
@@ -119,7 +117,7 @@ python file_organizer.py --REAL
 
 ### 1. **Dynamic Content Discovery** ⭐
 
-The organizer **learns categories from YOUR files** - no hardcoded keywords!
+The organizer **learns categories from your files**.
 
 - Analyzes filenames, folder names, and content
 - Discovers patterns and creates categories automatically

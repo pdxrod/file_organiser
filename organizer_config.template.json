@@ -124,6 +124,10 @@
     "use_rsync": true,
     "rsync_checksum_mode": "timestamp",
     "comment_rsync_mode": "checksum = thorough but SLOW (20+ hours first sync). timestamp = fast (minutes for unchanged files). Recommended: timestamp",
+    "rsync_size_only": false,
+    "comment_rsync_size_only": "true = only compare file sizes (faster for cloud storage). false = compare size + timestamp (more accurate)",
+    "rsync_additional_args": [],
+    "comment_rsync_args": "Extra rsync flags to reduce FUSE overhead. Example: [\"--omit-dir-times\", \"--no-perms\", \"--no-group\", \"--no-owner\", \"--delete-after\"]",
     "sync_exclude_patterns": [
         "node_modules",
         ".git",
@@ -166,8 +170,9 @@
     "comment_vcs_sync": "Version control folders (.git, .hg, .svn, .cvs) excluded - they're huge and don't sync well to cloud storage",
     "max_drive_usage_percent": 90,
     "sync_chunk_subfolders": 30,
+    "sync_chunk_concurrency": 1,
     "sync_timeout_minutes": 60,
-    "comment_chunking": "Large folders sync in chunks. Each chunk times out after 60 min to prevent infinite hangs.",
+    "comment_chunking": "Large folders sync in chunks. Each chunk times out after 60 min to prevent infinite hangs. sync_chunk_concurrency = number of parallel sync operations (1 = sequential, 3+ = parallel)",
     "sync_pairs": [
         {
             "comment": "Example: Sync from one location to another",
@@ -189,6 +194,7 @@
         "max_categories": 50,
         "min_word_length": 5,
         "stop_words_enabled": true,
-        "comment": "min_word_length: 5 avoids short common words. Higher max_categories discovers more topics."
+        "use_clip": false,
+        "comment": "min_word_length: 5 avoids short common words. Higher max_categories discovers more topics. use_clip: false by default (very slow on CPU, ~30min first load)"
     }
 }

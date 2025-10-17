@@ -279,11 +279,15 @@ class DynamicContentAnalyzer:
         keywords = set()
         
         # Keywords from path
-        keywords.update(self.extract_keywords_from_path(file_path))
+        path_keywords = self.extract_keywords_from_path(file_path)
+        keywords.update(path_keywords)
         
         # Keywords from content
+        content_keywords = set()
         if content:
-            keywords.update(self.extract_keywords_from_text(content))
+            content_keywords = self.extract_keywords_from_text(content)
+            keywords.update(content_keywords)
+        
         
         # Update global frequency counts
         for keyword in keywords:
@@ -307,6 +311,13 @@ class DynamicContentAnalyzer:
         
         if not significant_keywords:
             self.logger.info("No significant keywords found for category discovery")
+            # Debug: show what keywords were found and their frequencies
+            if self.keyword_frequencies:
+                self.logger.info(f"Debug: Found {len(self.keyword_frequencies)} keywords with frequencies:")
+                for keyword, freq in sorted(self.keyword_frequencies.items(), key=lambda x: x[1], reverse=True)[:20]:
+                    self.logger.info(f"  '{keyword}': {freq} (min: {self.min_keyword_freq})")
+            else:
+                self.logger.info("Debug: No keywords extracted at all")
             return {}
         
         # Sort by frequency
@@ -1017,25 +1028,67 @@ class EnhancedFileOrganizer:
             self._check_unconfigured_drives()
             self._resolve_drive_placeholders()
         else:
-            # TEST MODE: Just note if config exists but don't require it
-            if os.path.exists(self.config_file):
-                print(f"Note: Found {self.config_file}, but test mode uses auto-generated test config")
+            # TEST MODE: Always check for config file and guide user
+            if not os.path.exists(self.config_file):
+                print("\n" + "=" * 70)
+                print("CONFIGURATION FILE REQUIRED")
+                print("=" * 70)
+                print(f"\nThe file '{self.config_file}' does not exist.")
+                print("\nEven in test mode, you need to create a configuration file first.")
+                print("This teaches you the proper setup for production mode.")
+                
+                # Check if template exists
+                template_file = "organizer_config.template.json"
+                if os.path.exists(template_file):
+                    print("\nTo get started:")
+                    print(f"  1. Copy the template:  cp {template_file} {self.config_file}")
+                    print(f"  2. Edit your config:   nano {self.config_file}")
+                    print("  3. Update the 'drives' section with your actual paths")
+                    print(f"  4. Run the program again")
+                    print("\nThe program will validate your config and then run in test mode.")
+                else:
+                    print(f"\nPlease create {self.config_file} with your drive configurations.")
+                
+                print("\n" + "=" * 70 + "\n")
+                sys.exit(1)
             else:
-                print(f"Note: {self.config_file} not found (OK in test mode - using auto-generated config)")
+                # Config file exists - validate it and use it
+                print(f"Found {self.config_file} - validating configuration...")
+                # Config was already loaded and validated in _load_config()
+                print("Configuration validated successfully. Running in test mode with your config.")
         
-        # Initialize managers
-        self.git_manager = GitManager(self.logger, self.config)
-        self.folder_sync = FolderSynchronizer(self.logger, self.git_manager)
-        self.background_backup = BackgroundBackup(self.logger, self.config)
-        self.content_analyzer = DynamicContentAnalyzer(self.logger, self.config)
+        # Ensure all required config keys exist with sensible defaults
+        self._ensure_config_defaults()
         
         # Set progress file path based on mode
         if test_mode:
             # In test mode, save to project directory
             self.progress_file = Path.cwd() / '.file_organizer_progress.json'
+            # Override config for test mode - use test/ directory instead of user's paths
+            self.config['source_folders'] = [str(Path.cwd() / 'test')]
+            self.config['exclude_folders'] = [str(Path.cwd() / 'test' / 'organized')]
+            self.config['output_base'] = str(Path.cwd() / 'test' / 'organized')
+            self.config['enable_duplicate_detection'] = False
+            self.config['enable_folder_sync'] = False
+            self.config['enable_git_tracking'] = False
+            self.config['enable_background_backup'] = False
+            # Override ML settings for test mode to be more lenient with small dataset
+            self.config['ml_content_analysis']['min_keyword_frequency'] = 2
+            self.config['ml_content_analysis']['min_category_size'] = 2
+            self.config['ml_content_analysis']['max_categories'] = 30
+            self.config['ml_content_analysis']['min_word_length'] = 4
+            # Override file size limits for test mode
+            self.config['min_file_size'] = 0  # Allow tiny test files
+            self.config['max_file_size'] = 10 * 1024 * 1024  # 10MB max for test files
         else:
             # In production mode, save to home directory
             self.progress_file = Path.home() / '.file_organizer_progress.json'
+        
+        # Initialize managers (after config overrides)
+        self.git_manager = GitManager(self.logger, self.config)
+        self.folder_sync = FolderSynchronizer(self.logger, self.git_manager)
+        self.background_backup = BackgroundBackup(self.logger, self.config)
+        self.content_analyzer = DynamicContentAnalyzer(self.logger, self.config)
         
         # Load progress from previous run (if interrupted)
         self.progress = self._load_progress()
@@ -1062,17 +1115,36 @@ class EnhancedFileOrganizer:
         if os.path.exists(self.config_file):
             try:
                 with open(self.config_file, 'r') as f:
-                    return json.load(f)
+                    config = json.load(f)
+                
+                # Always validate config if it exists (both test and production modes)
+                self._validate_config_sanity(config)
+                return config
+                
+            except json.JSONDecodeError as e:
+                # JSON syntax error
+                print("\n" + "=" * 70)
+                print("INVALID JSON CONFIGURATION")
+                print("=" * 70)
+                print(f"\nThe file '{self.config_file}' contains invalid JSON:")
+                print(f"  {e}")
+                print("\nThis is a common mistake when editing configuration files.")
+                print("\nTo fix this:")
+                print("  1. Check for missing commas, brackets, or quotes")
+                print("  2. Use a JSON validator: https://jsonlint.com/")
+                print("  3. Or start fresh: cp organizer_config.template.json organizer_config.json")
+                print("\n" + "=" * 70 + "\n")
+                sys.exit(1)
             except Exception as e:
-                # In test mode, just warn and return empty dict
-                if self.test_mode:
-                    print(f"Warning: Could not load {self.config_file}: {e}")
-                    print("Continuing with auto-generated test config...")
-                    return {}
-                else:
-                    # In production mode, fail hard
-                    print(f"ERROR: Could not load config file {self.config_file}: {e}")
-                    sys.exit(1)
+                # Other config errors (caught by sanity check)
+                print("\n" + "=" * 70)
+                print("CONFIGURATION VALIDATION FAILED")
+                print("=" * 70)
+                print(f"\nThe file '{self.config_file}' has configuration errors:")
+                print(f"  {e}")
+                print("\nPlease fix these errors before running the program.")
+                print("\n" + "=" * 70 + "\n")
+                sys.exit(1)
         else:
             # Config file doesn't exist
             if self.test_mode:
@@ -1098,6 +1170,235 @@ class EnhancedFileOrganizer:
                 
                 print("\n" + "=" * 70 + "\n")
                 sys.exit(1)
+    
+    def _validate_config_sanity(self, config: Dict):
+        """Validate config for basic sanity (both test and production modes)."""
+        errors = []
+        warnings = []
+        
+        # Resolve drive placeholders to get actual paths for validation
+        resolved_paths = self._resolve_all_paths(config)
+        
+        # Check for circular references in sync_pairs
+        if 'sync_pairs' in config and isinstance(config['sync_pairs'], list):
+            for i, pair in enumerate(config['sync_pairs']):
+                if isinstance(pair, dict) and 'source' in pair and 'target' in pair:
+                    source = pair['source']
+                    target = pair['target']
+                    
+                    # Resolve placeholders
+                    source_resolved = self._resolve_path_with_drives(source, config.get('drives', {}))
+                    target_resolved = self._resolve_path_with_drives(target, config.get('drives', {}))
+                    
+                    # Check if source and target are the same
+                    if source_resolved == target_resolved:
+                        errors.append(f"sync_pairs[{i}]: source and target are identical: '{source}' → '{source_resolved}'")
+                    
+                    # Check if one is a subdirectory of the other (potential circular reference)
+                    if source_resolved.startswith(target_resolved + '/') or target_resolved.startswith(source_resolved + '/'):
+                        warnings.append(f"sync_pairs[{i}]: potential circular reference - '{source}' and '{target}' are nested")
+        
+        # Check for drives referencing themselves or being nested
+        if 'drives' in config and isinstance(config['drives'], dict):
+            drives = config['drives']
+            drive_paths = []
+            for drive_name, drive_path in drives.items():
+                if isinstance(drive_path, str) and drive_path and not 'UNCONFIGURED' in drive_path:
+                    drive_paths.append((drive_name, drive_path))
+            
+            # Check for nested drives
+            for drive_name, drive_path in drive_paths:
+                for other_name, other_path in drive_paths:
+                    if drive_name != other_name:
+                        if drive_path.startswith(other_path + '/') or other_path.startswith(drive_path + '/'):
+                            warnings.append(f"Drive '{drive_name}' ({drive_path}) is nested within '{other_name}' ({other_path})")
+        
+        # Check for source_folders that are in exclude_folders
+        if 'source_folders' in config and 'exclude_folders' in config:
+            source_folders = config['source_folders']
+            exclude_folders = config['exclude_folders']
+            if isinstance(source_folders, list) and isinstance(exclude_folders, list):
+                for source in source_folders:
+                    source_resolved = self._resolve_path_with_drives(source, config.get('drives', {}))
+                    for exclude in exclude_folders:
+                        exclude_resolved = self._resolve_path_with_drives(exclude, config.get('drives', {}))
+                        if source_resolved.startswith(exclude_resolved):
+                            warnings.append(f"Source folder '{source}' is excluded by '{exclude}'")
+        
+        # Check for output_base conflicts with source_folders or drives
+        if 'output_base' in config:
+            output_base = config['output_base']
+            output_resolved = self._resolve_path_with_drives(output_base, config.get('drives', {}))
+            
+            # Check if output_base is in any source folder
+            if 'source_folders' in config and isinstance(config['source_folders'], list):
+                for source in config['source_folders']:
+                    source_resolved = self._resolve_path_with_drives(source, config.get('drives', {}))
+                    if output_resolved.startswith(source_resolved):
+                        errors.append(f"output_base '{output_base}' is inside source folder '{source}' - this will cause infinite recursion")
+            
+            # Check if output_base is in any drive
+            if 'drives' in config and isinstance(config['drives'], dict):
+                for drive_name, drive_path in config['drives'].items():
+                    if isinstance(drive_path, str) and drive_path and not 'UNCONFIGURED' in drive_path:
+                        if output_resolved.startswith(drive_path):
+                            warnings.append(f"output_base '{output_base}' is inside drive '{drive_name}' ({drive_path})")
+        
+        # Check for backup_drive_path conflicts
+        if 'backup_drive_path' in config:
+            backup_path = config['backup_drive_path']
+            backup_resolved = self._resolve_path_with_drives(backup_path, config.get('drives', {}))
+            
+            # Check if backup drive is in source folders
+            if 'source_folders' in config and isinstance(config['source_folders'], list):
+                for source in config['source_folders']:
+                    source_resolved = self._resolve_path_with_drives(source, config.get('drives', {}))
+                    if backup_resolved.startswith(source_resolved):
+                        warnings.append(f"backup_drive_path '{backup_path}' is inside source folder '{source}'")
+        
+        # Check for drive placeholders that don't exist
+        if 'drives' in config and isinstance(config['drives'], dict):
+            for drive_name, drive_path in config['drives'].items():
+                if isinstance(drive_path, str) and drive_path and not 'UNCONFIGURED' in drive_path:
+                    if not os.path.exists(drive_path):
+                        warnings.append(f"Drive '{drive_name}' path does not exist: '{drive_path}'")
+        
+        # Check for reasonable numeric values
+        if 'scan_interval' in config:
+            interval = config['scan_interval']
+            if not isinstance(interval, (int, float)) or interval < 60:
+                warnings.append(f"scan_interval ({interval}) is very short - consider at least 300 seconds")
+        
+        if 'sync_timeout_minutes' in config:
+            timeout = config['sync_timeout_minutes']
+            if not isinstance(timeout, (int, float)) or timeout < 1:
+                warnings.append(f"sync_timeout_minutes ({timeout}) is very short - consider at least 5 minutes")
+        
+        if 'sync_chunk_concurrency' in config:
+            concurrency = config['sync_chunk_concurrency']
+            if not isinstance(concurrency, int) or concurrency < 1 or concurrency > 10:
+                warnings.append(f"sync_chunk_concurrency ({concurrency}) should be between 1-10")
+        
+        # Print warnings (non-fatal)
+        if warnings:
+            print(f"\n⚠️  Configuration warnings in {self.config_file}:")
+            for warning in warnings:
+                print(f"  • {warning}")
+            print()
+        
+        # Print errors (fatal)
+        if errors:
+            print(f"\n❌ Configuration errors in {self.config_file}:")
+            for error in errors:
+                print(f"  • {error}")
+            print()
+            
+            if self.test_mode:
+                print("Continuing with auto-generated test config...")
+            else:
+                print("Please fix these errors before running in production mode.")
+                raise ValueError("Configuration validation failed")
+    
+    def _ensure_config_defaults(self):
+        """Ensure all required config keys exist with sensible defaults."""
+        # Essential operational settings
+        defaults = {
+            'flaky_volume_retries': 3,
+            'retry_delay': 5,
+            'scan_interval': 3600,
+            'max_file_size': 104857600,
+            'enable_content_analysis': True,
+            'enable_duplicate_detection': False,
+            'enable_folder_sync': False,
+            'enable_git_tracking': False,
+            'enable_background_backup': False,
+            'use_rsync': True,
+            'rsync_checksum_mode': 'timestamp',
+            'rsync_size_only': False,
+            'rsync_additional_args': [],
+            'sync_chunk_subfolders': 30,
+            'sync_chunk_concurrency': 1,
+            'sync_timeout_minutes': 60,
+            'max_drive_usage_percent': 90,
+            'max_soft_links_per_file': 6,
+            'min_file_size': 1024,
+            'sync_exclude_patterns': [
+                'node_modules', '.git', '__pycache__', '.DS_Store', '*.pyc',
+                '.venv', 'venv', 'env', 'dist', 'build', '.next', '.cache'
+            ],
+            'exclude_patterns': [
+                'node_modules', '.git', '__pycache__', '.DS_Store', '*.pyc',
+                '.venv', 'venv', 'env', 'dist', 'build', '.next', '.cache'
+            ],
+            'exclude_extensions': ['.beam', '.pyc', '.o', '.so'],
+            'exclude_folders': [],
+            'source_folders': [],
+            'sync_pairs': [],
+            'backup_directories': [],
+            'git_exclude_folders': [],
+            'drives': {},
+            'output_base': '',
+            'backup_drive_path': '',
+            'git_user': 'UNCONFIGURED',
+            'git_email': 'UNCONFIGURED'
+        }
+        
+        # Apply defaults for missing keys
+        for key, default_value in defaults.items():
+            if key not in self.config:
+                self.config[key] = default_value
+        
+        # Ensure ml_content_analysis exists with defaults
+        if 'ml_content_analysis' not in self.config:
+            self.config['ml_content_analysis'] = {
+                'enabled': True,
+                'min_keyword_frequency': 3,
+                'min_category_size': 5,
+                'max_categories': 50,
+                'min_word_length': 5,
+                'stop_words_enabled': True,
+                'use_clip': False
+            }
+        else:
+            # Ensure ml_content_analysis has all required sub-keys
+            ml_defaults = {
+                'enabled': True,
+                'min_keyword_frequency': 3,
+                'min_category_size': 5,
+                'max_categories': 50,
+                'min_word_length': 5,
+                'stop_words_enabled': True,
+                'use_clip': False
+            }
+            for key, default_value in ml_defaults.items():
+                if key not in self.config['ml_content_analysis']:
+                    self.config['ml_content_analysis'][key] = default_value
+    
+    def _resolve_all_paths(self, config: Dict) -> Dict:
+        """Resolve all drive placeholders in config paths."""
+        resolved = {}
+        drives = config.get('drives', {})
+        
+        # Resolve drives first
+        for drive_name, drive_path in drives.items():
+            resolved[drive_name] = drive_path
+        
+        # Resolve other paths
+        for key in ['source_folders', 'exclude_folders', 'output_base', 'backup_drive_path']:
+            if key in config:
+                if isinstance(config[key], list):
+                    resolved[key] = [self._resolve_path_with_drives(path, drives) for path in config[key]]
+                else:
+                    resolved[key] = self._resolve_path_with_drives(config[key], drives)
+        
+        return resolved
+    
+    def _resolve_path_with_drives(self, path: str, drives: Dict) -> str:
+        """Resolve a path containing drive placeholders."""
+        for drive_name, drive_path in drives.items():
+            if path.startswith(drive_name + '/') or path.startswith(drive_name):
+                return path.replace(drive_name, drive_path, 1)
+        return path
     
     def _validate_config_structure(self):
         """Validate configuration file structure before processing (production mode only)."""
@@ -2448,11 +2749,8 @@ def main():
             create_test_environment()
             print()
         
-        # Use test config
-        config_file = 'test_config_temp.json'
-        import json
-        with open(config_file, 'w') as f:
-            json.dump(get_test_config(), f, indent=2)
+        # In test mode, still require organizer_config.json for educational setup
+        config_file = args.config or 'organizer_config.json'
     
     # Create organizer
     organizer = EnhancedFileOrganizer(config_file, test_mode=not production_mode)
