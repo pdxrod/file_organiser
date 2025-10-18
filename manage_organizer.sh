@@ -171,7 +171,14 @@ case "$1" in
 
     gui)
         echo "Starting File Organizer Desktop App..."
-        python "$SCRIPT_DIR/desktop_app.py"
+        # Try to bring window to front on Mac
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            python "$SCRIPT_DIR/desktop_app.py" &
+            sleep 0.5
+            osascript -e 'tell application "System Events" to set frontmost of first process whose name is "Python" to true' 2>/dev/null || true
+        else
+            python "$SCRIPT_DIR/desktop_app.py"
+        fi
         ;;
 
     *)

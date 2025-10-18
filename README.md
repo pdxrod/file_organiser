@@ -38,6 +38,64 @@ The desktop app gives you a friendly interface to:
 - **Sync Only** - Just synchronize folders between drives
 - **Dedupe Only** - Just find and remove duplicate files
 
+## 📖 Mode Guide - What Each Option Does
+
+### 🧪 Test Mode
+**What it does:** Safely experiments with sample files in the `test/` folder
+- **Files affected:** Only files in `test/` directory (never touches your real files)
+- **Output:** Creates `test/organized/` with organized sample files
+- **When to use:** Learning how the organizer works, testing new configurations
+- **Safety:** Completely safe - your real files are never touched
+
+### 🏭 Real Background Daemon
+**What it does:** Full production organization that runs continuously in the background
+- **Files affected:** Your real files in configured source folders
+- **Output:** Creates `~/organized/` with soft links to your organized files
+- **When to use:** Production use - keep your files organized automatically
+- **Behavior:** Runs forever, organizing new files as they appear
+
+### 🔍 Real - Scan Once
+**What it does:** Full production organization that runs once then stops
+- **Files affected:** Your real files in configured source folders
+- **Output:** Creates `~/organized/` with soft links to your organized files
+- **When to use:** One-time organization of existing files
+- **Behavior:** Scans once, organizes everything, then exits
+
+### 🔄 Sync Only
+**What it does:** Only synchronizes folders between drives (no file organization)
+- **Files affected:** Copies files between source and target folders using rsync
+- **Output:** Files copied to target folders, no organization into categories
+- **When to use:** Just want to backup/sync files without organizing them
+- **Behavior:** Fast file copying without ML analysis or categorization
+
+### 🗑️ Deduplicate
+**What it does:** Finds and removes duplicate soft links in your organized folder
+- **Files affected:** Only soft links in `~/organized/` (never touches original files)
+- **Output:** Removes duplicate links, keeps one link per unique file
+- **When to use:** Clean up after multiple runs, remove redundant organization
+- **Safety:** Only removes soft links, your original files are never deleted
+
+### 📁 What Are "Duplicates"?
+When the organizer runs multiple times, you might end up with:
+```
+~/organized/images/photo.jpg          → ~/Pictures/IMG_001.jpg
+~/organized/2024/photo.jpg           → ~/Pictures/IMG_001.jpg  (duplicate)
+~/organized/backup/photo.jpg         → ~/Pictures/IMG_001.jpg  (duplicate)
+```
+
+**Deduplicate mode** removes the extra soft links, keeping only:
+```
+~/organized/images/photo.jpg          → ~/Pictures/IMG_001.jpg  (kept)
+~/Pictures/IMG_001.jpg               (original file untouched)
+```
+
+### 🎯 Typical Workflow
+1. **Test Mode** → Try it out safely with sample files
+2. **Real - Scan Once** → Do a one-time organization of your files
+3. **Real Background Daemon** → Keep it running for continuous organization
+4. **** → Clean up duplicates if needed
+5. **Sync Only** → Just backup files without organizing
+
 ---
 
 ## 🚀 Quick Start (Desktop App)
