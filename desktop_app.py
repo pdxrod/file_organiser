@@ -10,9 +10,28 @@ import subprocess
 import threading
 import time
 import os
+import signal
 import json
+import sys
 from pathlib import Path
 import psutil
+
+
+def check_desktop_app_running():
+    """Check if desktop_app.py is already running"""
+    try:
+        current_pid = os.getpid()
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+            try:
+                if proc.info['cmdline'] and 'desktop_app.py' in ' '.join(proc.info['cmdline']):
+                    pid = proc.info['pid']
+                    if pid != current_pid:  # Don't count ourselves
+                        return True, pid
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        return False, None
+    except Exception:
+        return False, None
 
 
 class FileOrganizerApp:
@@ -35,6 +54,9 @@ class FileOrganizerApp:
         self.update_status()
         self.start_log_refresh()
         self.start_tree_refresh()
+        
+        # Set up cleanup on window close
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
     
     def setup_ui(self):
         """Create the main UI layout"""
@@ -62,19 +84,37 @@ class FileOrganizerApp:
         control_frame = ttk.LabelFrame(parent, text="Organizer Controls", padding="10")
         control_frame.grid(row=0, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(0, 10))
         
-        # Status display
-        status_frame = ttk.Frame(control_frame)
-        status_frame.grid(row=0, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
+        # Configure grid weights for the control frame
+        control_frame.columnconfigure(0, weight=1)
+        control_frame.columnconfigure(1, weight=1)
         
-        self.status_label = ttk.Label(status_frame, text="Status: Checking...", font=("Arial", 10, "bold"))
-        self.status_label.grid(row=0, column=0, sticky=tk.W)
+        # Left side: Status box and buttons
+        left_frame = ttk.Frame(control_frame)
+        left_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N), pady=(0, 10))
         
-        self.pid_label = ttk.Label(status_frame, text="PID: None")
-        self.pid_label.grid(row=0, column=1, sticky=tk.W, padx=(20, 0))
+        # Status display - prominent black box (moved down)
+        status_frame = ttk.Frame(left_frame)
+        status_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(10, 0))
         
-        # Mode checkboxes
+        # Create a black background frame for status
+        self.status_box = tk.Frame(status_frame, bg="black", relief="raised", bd=2)
+        self.status_box.grid(row=0, column=0, sticky=(tk.W, tk.E))
+        
+        self.status_label = tk.Label(self.status_box, text="Status: Checking...", 
+                                    font=("Arial", 14, "bold"), 
+                                    bg="black", fg="white", 
+                                    padx=10, pady=5)
+        self.status_label.pack()
+        
+        self.pid_label = tk.Label(self.status_box, text="Process: Checking...", 
+                                 font=("Arial", 14, "bold"), 
+                                 bg="black", fg="white", 
+                                 padx=10, pady=2)
+        self.pid_label.pack()
+        
+        # Mode checkboxes (moved to the right)
         mode_frame = ttk.LabelFrame(control_frame, text="Mode Options", padding="5")
-        mode_frame.grid(row=1, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
+        mode_frame.grid(row=0, column=1, sticky=(tk.W, tk.E, tk.N), pady=(0, 10), padx=(10, 0))
         
         self.test_mode_var = tk.BooleanVar()
         self.real_mode_var = tk.BooleanVar()
@@ -90,9 +130,9 @@ class FileOrganizerApp:
         ttk.Checkbutton(mode_frame, text="Sync Only", variable=self.sync_only_var).grid(row=1, column=1, sticky=tk.W, padx=(0, 10))
         ttk.Checkbutton(mode_frame, text="Dedupe Only", variable=self.dedupe_only_var).grid(row=1, column=2, sticky=tk.W, padx=(0, 10))
         
-        # Action buttons
-        button_frame = ttk.Frame(control_frame)
-        button_frame.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E))
+        # Action buttons (moved to left side, above status box)
+        button_frame = ttk.Frame(left_frame)
+        button_frame.grid(row=0, column=0, sticky=(tk.W, tk.E))
         
         self.start_button = ttk.Button(button_frame, text="Start", command=self.start_organizer)
         self.start_button.grid(row=0, column=0, padx=(0, 5))
@@ -108,7 +148,7 @@ class FileOrganizerApp:
         
         # Log file path
         log_frame = ttk.Frame(control_frame)
-        log_frame.grid(row=3, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(10, 0))
+        log_frame.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(10, 0))
         
         ttk.Label(log_frame, text="Log File:").grid(row=0, column=0, sticky=tk.W)
         self.log_path = Path.home() / ".file_organizer.log"
@@ -160,10 +200,9 @@ class FileOrganizerApp:
         tree_controls.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(5, 0))
         
         ttk.Button(tree_controls, text="Refresh Tree", command=self.refresh_tree).grid(row=0, column=0, padx=(0, 5))
-        ttk.Button(tree_controls, text="Open Folder", command=self.open_folder).grid(row=0, column=1, padx=(0, 5))
         
         self.auto_tree_refresh_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(tree_controls, text="Auto-refresh", variable=self.auto_tree_refresh_var).grid(row=0, column=2, padx=(5, 0))
+        ttk.Checkbutton(tree_controls, text="Auto-refresh", variable=self.auto_tree_refresh_var).grid(row=0, column=1, padx=(5, 0))
     
     def run_command(self, command, wait=True):
         """Run a shell command and return the result"""
@@ -181,32 +220,30 @@ class FileOrganizerApp:
     
     def update_status(self):
         """Update the status display"""
-        # Check if organizer is running
-        success, stdout, stderr = self.run_command(f"bash {self.manage_script} status")
+        # Check for running processes first (most accurate)
+        has_running, processes = self.check_for_running_processes()
         
-        if success and "is running" in stdout.lower():
+        if has_running:
+            # Something is running
             self.organizer_running = True
-            self.status_label.config(text="Status: Running", foreground="green")
+            self.status_label.config(text="Status: Running", fg="white")
+            self.pid_label.config(text="Process: Active", fg="white")
             
-            # Try to get PID
-            try:
-                for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-                    if 'file_organizer.py' in ' '.join(proc.info['cmdline'] or []):
-                        self.organizer_pid = proc.info['pid']
-                        self.pid_label.config(text=f"PID: {self.organizer_pid}")
-                        break
-            except:
-                self.pid_label.config(text="PID: Unknown")
+            # Update button states
+            self.start_button.config(state="disabled")
+            self.stop_button.config(state="normal")
+            self.restart_button.config(state="normal")
         else:
+            # Nothing running
             self.organizer_running = False
-            self.status_label.config(text="Status: Stopped", foreground="red")
-            self.pid_label.config(text="PID: None")
+            self.status_label.config(text="Status: Stopped", fg="white")
+            self.pid_label.config(text="Process: Inactive", fg="white")
             self.organizer_pid = None
-        
-        # Update button states
-        self.start_button.config(state="normal" if not self.organizer_running else "disabled")
-        self.stop_button.config(state="normal" if self.organizer_running else "disabled")
-        self.restart_button.config(state="normal")
+            
+            # Update button states
+            self.start_button.config(state="normal")
+            self.stop_button.config(state="disabled")
+            self.restart_button.config(state="disabled")
     
     def start_organizer(self):
         """Start the organizer with selected options"""
@@ -225,7 +262,8 @@ class FileOrganizerApp:
             elif self.daemon_var.get():
                 command_parts.append("start")
             else:
-                command_parts.append("test-real")
+                # Default to daemon mode when only Real Mode is checked
+                command_parts.append("start")
         else:
             messagebox.showwarning("Mode Selection", "Please select either Test Mode or Real Mode")
             return
@@ -237,7 +275,6 @@ class FileOrganizerApp:
         
         if success:
             self.update_status()
-            messagebox.showinfo("Organizer Started", f"Command: {command}")
         else:
             messagebox.showerror("Error", f"Failed to start organizer:\n{stderr}")
     
@@ -247,7 +284,6 @@ class FileOrganizerApp:
         
         if success:
             self.update_status()
-            messagebox.showinfo("Organizer Stopped", "File organizer has been stopped")
         else:
             messagebox.showerror("Error", f"Failed to stop organizer:\n{stderr}")
     
@@ -377,39 +413,71 @@ class FileOrganizerApp:
         self.tree_refresh_thread = threading.Thread(target=refresh_loop, daemon=True)
         self.tree_refresh_thread.start()
     
-    def open_folder(self):
-        """Open the selected folder in file manager"""
-        selection = self.tree.selection()
-        if not selection:
-            messagebox.showinfo("No Selection", "Please select a folder in the tree")
-            return
-        
-        item = selection[0]
-        values = self.tree.item(item, "values")
-        if values and values[0]:
-            path = Path(values[0])
-            if path.exists():
+    def get_running_processes(self):
+        """Get all running file_organizer.py processes"""
+        processes = []
+        try:
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
                 try:
-                    if os.name == 'nt':  # Windows
-                        os.startfile(str(path))
-                    elif os.name == 'posix':  # macOS and Linux
-                        subprocess.run(['open' if sys.platform == 'darwin' else 'xdg-open', str(path)])
+                    if proc.info['cmdline'] and 'file_organizer.py' in ' '.join(proc.info['cmdline']):
+                        # Check if it's a daemon process (has --internal-daemon flag)
+                        cmdline = ' '.join(proc.info['cmdline'])
+                        is_daemon = '--internal-daemon' in cmdline
+                        processes.append({
+                            'pid': proc.info['pid'],
+                            'is_daemon': is_daemon,
+                            'cmdline': cmdline
+                        })
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+        except Exception as e:
+            print(f"Error getting processes: {e}")
+        return processes
+    
+    def kill_non_daemon_processes(self):
+        """Kill all non-daemon file_organizer.py processes"""
+        processes = self.get_running_processes()
+        killed_count = 0
+        
+        for proc_info in processes:
+            if not proc_info['is_daemon']:
+                try:
+                    os.kill(proc_info['pid'], signal.SIGTERM)
+                    killed_count += 1
+                    print(f"Killed non-daemon process PID {proc_info['pid']}")
                 except Exception as e:
-                    messagebox.showerror("Error", f"Could not open folder: {e}")
-            else:
-                messagebox.showwarning("Path Not Found", f"Path does not exist: {path}")
+                    print(f"Could not kill PID {proc_info['pid']}: {e}")
+        
+        if killed_count > 0:
+            print(f"Killed {killed_count} non-daemon file organizer processes")
+    
+    def check_for_running_processes(self):
+        """Check if any file_organizer.py processes are running"""
+        processes = self.get_running_processes()
+        return len(processes) > 0, processes
+    
+    def on_closing(self):
+        """Handle window closing - kill non-daemon processes"""
+        print("Closing File Organizer GUI...")
+        
+        # Kill any non-daemon processes
+        self.kill_non_daemon_processes()
+        
+        # Close the window
+        self.root.destroy()
 
 
 def main():
     """Main entry point"""
+    # Check if desktop app is already running
+    is_running, pid = check_desktop_app_running()
+    if is_running:
+        print(f"File Organizer Desktop App is already running (PID {pid})")
+        print("Only one instance of the desktop app can run at a time.")
+        sys.exit(1)
+    
     root = tk.Tk()
     app = FileOrganizerApp(root)
-    
-    # Handle window closing
-    def on_closing():
-        root.destroy()
-    
-    root.protocol("WM_DELETE_WINDOW", on_closing)
     root.mainloop()
 
 
