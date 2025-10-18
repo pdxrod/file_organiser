@@ -112,23 +112,19 @@ class FileOrganizerApp:
                                  padx=10, pady=2)
         self.pid_label.pack()
         
-        # Mode checkboxes (moved to the right)
+        # Mode radio buttons (moved to the right)
         mode_frame = ttk.LabelFrame(control_frame, text="Mode Options", padding="5")
         mode_frame.grid(row=0, column=1, sticky=(tk.W, tk.E, tk.N), pady=(0, 10), padx=(10, 0))
         
-        self.test_mode_var = tk.BooleanVar()
-        self.real_mode_var = tk.BooleanVar()
-        self.scan_once_var = tk.BooleanVar()
-        self.daemon_var = tk.BooleanVar()
-        self.sync_only_var = tk.BooleanVar()
-        self.dedupe_only_var = tk.BooleanVar()
+        # Single variable for all radio buttons (exclusive selection)
+        self.mode_var = tk.StringVar(value="test")
         
-        ttk.Checkbutton(mode_frame, text="Test Mode", variable=self.test_mode_var).grid(row=0, column=0, sticky=tk.W, padx=(0, 10))
-        ttk.Checkbutton(mode_frame, text="Real Mode (-R)", variable=self.real_mode_var).grid(row=0, column=1, sticky=tk.W, padx=(0, 10))
-        ttk.Checkbutton(mode_frame, text="Scan Once", variable=self.scan_once_var).grid(row=0, column=2, sticky=tk.W, padx=(0, 10))
-        ttk.Checkbutton(mode_frame, text="Daemon Mode", variable=self.daemon_var).grid(row=1, column=0, sticky=tk.W, padx=(0, 10))
-        ttk.Checkbutton(mode_frame, text="Sync Only", variable=self.sync_only_var).grid(row=1, column=1, sticky=tk.W, padx=(0, 10))
-        ttk.Checkbutton(mode_frame, text="Dedupe Only", variable=self.dedupe_only_var).grid(row=1, column=2, sticky=tk.W, padx=(0, 10))
+        # Radio buttons for exclusive mode selection
+        ttk.Radiobutton(mode_frame, text="Test", variable=self.mode_var, value="test").grid(row=0, column=0, sticky=tk.W, padx=(0, 10))
+        ttk.Radiobutton(mode_frame, text="Real Background Daemon", variable=self.mode_var, value="daemon").grid(row=0, column=1, sticky=tk.W, padx=(0, 10))
+        ttk.Radiobutton(mode_frame, text="Real - Scan Once", variable=self.mode_var, value="scan_once").grid(row=1, column=0, sticky=tk.W, padx=(0, 10))
+        ttk.Radiobutton(mode_frame, text="Deduplicate", variable=self.mode_var, value="dedupe").grid(row=1, column=1, sticky=tk.W, padx=(0, 10))
+        ttk.Radiobutton(mode_frame, text="Sync Only", variable=self.mode_var, value="sync").grid(row=2, column=0, sticky=tk.W, padx=(0, 10))
         
         # Action buttons (moved to left side, above status box)
         button_frame = ttk.Frame(left_frame)
@@ -247,25 +243,23 @@ class FileOrganizerApp:
     
     def start_organizer(self):
         """Start the organizer with selected options"""
-        # Build command based on checkboxes
+        # Build command based on radio button selection
         command_parts = ["bash", str(self.manage_script)]
         
-        if self.test_mode_var.get() and not self.real_mode_var.get():
+        mode = self.mode_var.get()
+        
+        if mode == "test":
             command_parts.append("test")
-        elif self.real_mode_var.get():
-            if self.scan_once_var.get():
-                command_parts.append("test-real")
-            elif self.sync_only_var.get():
-                command_parts.append("sync")
-            elif self.dedupe_only_var.get():
-                command_parts.append("dedupe")
-            elif self.daemon_var.get():
-                command_parts.append("start")
-            else:
-                # Default to daemon mode when only Real Mode is checked
-                command_parts.append("start")
+        elif mode == "daemon":
+            command_parts.append("start")
+        elif mode == "scan_once":
+            command_parts.append("test-real")
+        elif mode == "dedupe":
+            command_parts.append("dedupe")
+        elif mode == "sync":
+            command_parts.append("sync")
         else:
-            messagebox.showwarning("Mode Selection", "Please select either Test Mode or Real Mode")
+            messagebox.showwarning("Mode Selection", "Please select a mode")
             return
         
         command = " ".join(command_parts)
@@ -338,8 +332,8 @@ class FileOrganizerApp:
         # Determine which organized folder to show based on mode
         organized_path = None
         
-        # Check if we're in test mode (test mode checkbox is checked)
-        if self.test_mode_var.get() and not self.real_mode_var.get():
+        # Check if we're in test mode
+        if self.mode_var.get() == "test":
             # Test mode - show test/organized
             test_organized = self.script_dir / "test" / "organized"
             if test_organized.exists():
