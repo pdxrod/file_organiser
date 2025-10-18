@@ -87,7 +87,7 @@ class FileOrganizerApp:
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
         main_frame.columnconfigure(1, weight=1)
-        main_frame.rowconfigure(2, weight=3)  # Make log and tree areas 50% taller
+        main_frame.rowconfigure(2, weight=4)  # Make log and tree areas 10% taller (3 -> 4)
         
         # Control panel (top)
         self.setup_control_panel(main_frame)
@@ -124,6 +124,11 @@ class FileOrganizerApp:
                                    bg="black", fg="white", 
                                    padx=8, pady=4)
         self.status_label.pack()
+        
+        # Exit button next to status box
+        exit_button = ttk.Button(status_frame, text="Exit", 
+                                command=self.exit_app)
+        exit_button.grid(row=0, column=1, sticky=(tk.W, tk.E), padx=(10, 0))
         
         # Mode radio buttons (moved to the right)
         mode_frame = ttk.LabelFrame(control_frame, text="Mode Options", padding="5")
@@ -476,6 +481,16 @@ class FileOrganizerApp:
         """Check if any file_organizer.py processes are running"""
         processes = self.get_running_processes()
         return len(processes) > 0, processes
+    
+    def exit_app(self):
+        """Exit the application - kill non-daemon processes"""
+        print("Exiting File Organizer GUI...")
+        
+        # Kill any non-daemon processes
+        self.kill_non_daemon_processes()
+        
+        # Close the window
+        self.root.destroy()
     
     def on_closing(self):
         """Handle window closing - kill non-daemon processes"""
