@@ -53,6 +53,7 @@ class FileOrganizerApp:
         self.setup_ui()
         self.update_status()
         self.start_log_refresh()
+        self.start_status_refresh()
         self.start_tree_refresh()
         
         # Set up cleanup on window close
@@ -100,17 +101,11 @@ class FileOrganizerApp:
         self.status_box = tk.Frame(status_frame, bg="black", relief="raised", bd=2)
         self.status_box.grid(row=0, column=0, sticky=(tk.W, tk.E))
         
-        self.status_label = tk.Label(self.status_box, text="Status: Checking...", 
-                                    font=("Arial", 14, "bold"), 
-                                    bg="black", fg="white", 
-                                    padx=10, pady=5)
+        self.status_label = tk.Label(self.status_box, text="Checking...", 
+                                   font=("Arial", 12, "bold"), 
+                                   bg="black", fg="white", 
+                                   padx=8, pady=4)
         self.status_label.pack()
-        
-        self.pid_label = tk.Label(self.status_box, text="Process: Checking...", 
-                                 font=("Arial", 14, "bold"), 
-                                 bg="black", fg="white", 
-                                 padx=10, pady=2)
-        self.pid_label.pack()
         
         # Mode radio buttons (moved to the right)
         mode_frame = ttk.LabelFrame(control_frame, text="Mode Options", padding="5")
@@ -222,8 +217,7 @@ class FileOrganizerApp:
         if has_running:
             # Something is running
             self.organizer_running = True
-            self.status_label.config(text="Status: Running", fg="white")
-            self.pid_label.config(text="Process: Active", fg="white")
+            self.status_label.config(text="Running", fg="lime")
             
             # Update button states
             self.start_button.config(state="disabled")
@@ -232,8 +226,7 @@ class FileOrganizerApp:
         else:
             # Nothing running
             self.organizer_running = False
-            self.status_label.config(text="Status: Stopped", fg="white")
-            self.pid_label.config(text="Process: Inactive", fg="white")
+            self.status_label.config(text="Stopped", fg="white")
             self.organizer_pid = None
             
             # Update button states
@@ -264,12 +257,18 @@ class FileOrganizerApp:
         
         command = " ".join(command_parts)
         
+        # Disable start button immediately to prevent multiple starts
+        self.start_button.config(state="disabled")
+        
         # Run the command
         success, stdout, stderr = self.run_command(command, wait=False)
         
         if success:
-            self.update_status()
+            # Update status after a short delay to allow process to start
+            self.root.after(1000, self.update_status)
         else:
+            # Re-enable start button if command failed
+            self.start_button.config(state="normal")
             messagebox.showerror("Error", f"Failed to start organizer:\n{stderr}")
     
     def stop_organizer(self):
@@ -322,6 +321,16 @@ class FileOrganizerApp:
         
         self.log_refresh_thread = threading.Thread(target=refresh_loop, daemon=True)
         self.log_refresh_thread.start()
+    
+    def start_status_refresh(self):
+        """Start the status auto-refresh thread"""
+        def status_refresh_loop():
+            while True:
+                self.root.after(0, self.update_status)
+                time.sleep(2)  # Refresh every 2 seconds
+        
+        self.status_refresh_thread = threading.Thread(target=status_refresh_loop, daemon=True)
+        self.status_refresh_thread.start()
     
     def refresh_tree(self):
         """Refresh the file tree"""
