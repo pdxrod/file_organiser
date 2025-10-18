@@ -38,7 +38,16 @@ class FileOrganizerApp:
     def __init__(self, root):
         self.root = root
         self.root.title("File Organizer")
-        self.root.geometry("1000x700")
+        self.root.geometry("1000x535")  # 15% shorter (630 -> 535)
+        
+        # Center the window on screen
+        self.center_window()
+        
+        # Bring window to front (more aggressive approach)
+        self.root.lift()
+        self.root.attributes('-topmost', True)
+        self.root.focus_force()
+        self.root.after(100, lambda: self.root.attributes('-topmost', False))
         
         # State variables
         self.organizer_running = False
@@ -59,6 +68,15 @@ class FileOrganizerApp:
         # Set up cleanup on window close
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
     
+    def center_window(self):
+        """Center the window on the screen"""
+        self.root.update_idletasks()
+        width = self.root.winfo_width()
+        height = self.root.winfo_height()
+        x = (self.root.winfo_screenwidth() // 2) - (width // 2)
+        y = (self.root.winfo_screenheight() // 2) - (height // 2)
+        self.root.geometry(f"{width}x{height}+{x}+{y}")
+    
     def setup_ui(self):
         """Create the main UI layout"""
         # Main frame
@@ -69,7 +87,7 @@ class FileOrganizerApp:
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
         main_frame.columnconfigure(1, weight=1)
-        main_frame.rowconfigure(2, weight=1)
+        main_frame.rowconfigure(2, weight=3)  # Make log and tree areas 50% taller
         
         # Control panel (top)
         self.setup_control_panel(main_frame)
@@ -118,7 +136,7 @@ class FileOrganizerApp:
         ttk.Radiobutton(mode_frame, text="Test", variable=self.mode_var, value="test").grid(row=0, column=0, sticky=tk.W, padx=(0, 10))
         ttk.Radiobutton(mode_frame, text="Real Background Daemon", variable=self.mode_var, value="daemon").grid(row=0, column=1, sticky=tk.W, padx=(0, 10))
         ttk.Radiobutton(mode_frame, text="Real - Scan Once", variable=self.mode_var, value="scan_once").grid(row=1, column=0, sticky=tk.W, padx=(0, 10))
-        ttk.Radiobutton(mode_frame, text="Deduplicate", variable=self.mode_var, value="dedupe").grid(row=1, column=1, sticky=tk.W, padx=(0, 10))
+        ttk.Radiobutton(mode_frame, text="Remove duplicate links in the \"organized\" folder", variable=self.mode_var, value="dedupe").grid(row=1, column=1, sticky=tk.W, padx=(0, 10))
         ttk.Radiobutton(mode_frame, text="Sync Only", variable=self.mode_var, value="sync").grid(row=2, column=0, sticky=tk.W, padx=(0, 10))
         
         # Action buttons (moved to left side, above status box)
