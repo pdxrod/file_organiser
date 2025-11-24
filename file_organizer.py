@@ -1287,15 +1287,18 @@ class EnhancedFileOrganizer:
         
         # Check for circular references in sync_pairs
         if 'sync_pairs' in config and isinstance(config['sync_pairs'], list):
+            drives = config.get('drives', {})
             for i, pair in enumerate(config['sync_pairs']):
                 if isinstance(pair, dict) and 'source' in pair and 'target' in pair:
                     source = pair['source']
                     target = pair['target']
                     
-                    # Expand and resolve paths
+                    # Resolve drive placeholders first, then expand and resolve paths
                     try:
-                        source_resolved = str(Path(source).expanduser().resolve())
-                        target_resolved = str(Path(target).expanduser().resolve())
+                        source_resolved_str = self._resolve_path_with_drives(source, drives)
+                        target_resolved_str = self._resolve_path_with_drives(target, drives)
+                        source_resolved = str(Path(source_resolved_str).expanduser().resolve())
+                        target_resolved = str(Path(target_resolved_str).expanduser().resolve())
                     except Exception as e:
                         errors.append(f"sync_pairs[{i}]: Invalid path - {e}")
                         continue
@@ -1454,10 +1457,19 @@ class EnhancedFileOrganizer:
     
     def _resolve_path_with_drives(self, path: str, drives: Dict) -> str:
         """Resolve a path containing drive placeholders."""
+        # Check if path starts with a drive name
         for drive_name, drive_path in drives.items():
-            if path.startswith(drive_name + '/') or path.startswith(drive_name):
-                return path.replace(drive_name, drive_path, 1)
-        return path
+            # Skip comment keys
+            if drive_name.startswith('comment'):
+                continue
+            # Check if path starts with drive name followed by '/' or is exactly the drive name
+            if path.startswith(drive_name + '/') or path == drive_name:
+                resolved = path.replace(drive_name, drive_path, 1)
+                # Expand ~ if present
+                return str(Path(resolved).expanduser())
+        
+        # No drive placeholder found, just expand ~
+        return str(Path(path).expanduser())
     
     def _validate_config_structure(self):
         """Validate configuration file structure before processing (production mode only)."""
@@ -1587,13 +1599,14 @@ class EnhancedFileOrganizer:
         self._resolve_placeholder_value('output_base')
         self._resolve_placeholder_value('backup_drive_path')
         
-        # Expand ~ in sync_pairs paths (no drive placeholder resolution needed)
+        # Resolve drive placeholders in sync_pairs
         if 'sync_pairs' in self.config:
+            drives = self.config.get('drives', {})
             for pair in self.config['sync_pairs']:
                 if 'source' in pair:
-                    pair['source'] = str(Path(pair['source']).expanduser().resolve())
+                    pair['source'] = self._resolve_path_with_drives(pair['source'], drives)
                 if 'target' in pair:
-                    pair['target'] = str(Path(pair['target']).expanduser().resolve())
+                    pair['target'] = self._resolve_path_with_drives(pair['target'], drives)
     
     def _resolve_path(self, path: str) -> str:
         """Resolve a path containing drive placeholders."""
@@ -2283,9 +2296,23 @@ class EnhancedFileOrganizer:
                 self.logger.info(f"✓ Skipping already completed sync: {source} -> {target}")
                 continue
             
-            # Expand ~ and resolve paths (no drive placeholder resolution needed)
+            # Paths should already be resolved from drive placeholders, just expand ~ and resolve
             source = Path(sync_pair['source']).expanduser().resolve()
             target = Path(sync_pair['target']).expanduser().resolve()
+            
+            # Check if source drive/path is available
+            source_parent = source
+            while source_parent.parent != source_parent and not source_parent.exists():
+                source_parent = source_parent.parent
+            
+            if not source_parent.exists():
+                self.logger.warning(f"Source drive/path not available: {source}")
+                self.logger.warning(f"Skipping sync pair: {sync_pair.get('source', 'unknown')} -> {sync_pair.get('target', 'unknown')}")
+                # Mark as completed so we don't get stuck
+                completed_pairs.append(i)
+                self.progress['sync_pairs_completed'] = completed_pairs
+                self._save_progress()
+                continue
             
             if source.exists():
                 # Check if we should chunk this sync (large folders)

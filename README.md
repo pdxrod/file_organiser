@@ -147,18 +147,24 @@ cp organizer_config.template.json organizer_config.json
 nano organizer_config.json  # or use your favorite editor
 ```
 
-Edit the `"sync_pairs"` section with your folder pairs to sync:
+Edit the `"drives"` and `"sync_pairs"` sections:
 
 ```json
 {
+    "drives": {
+        "MAIN_DRIVE": "/Users/yourname",
+        "EXTERNAL_DRIVE": "/Volumes/YourExternalDrive",
+        "PROTON_DRIVE": "/Users/yourname/ProtonDrive",
+        "GOOGLE_DRIVE": "/Users/yourname/GoogleDrive/MyFiles/"
+    },
     "sync_pairs": [
         {
-            "source": "/Users/yourname/dev",
-            "target": "/Volumes/ExternalDrive/dev"
+            "source": "MAIN_DRIVE/Pictures",
+            "target": "EXTERNAL_DRIVE/Pictures"
         },
         {
-            "source": "/Users/yourname/Documents",
-            "target": "/Users/yourname/GoogleDrive/Documents"
+            "source": "MAIN_DRIVE/Documents",
+            "target": "GOOGLE_DRIVE/Documents"
         }
     ],
     "exclude_patterns": [
@@ -168,6 +174,8 @@ Edit the `"sync_pairs"` section with your folder pairs to sync:
     ]
 }
 ```
+
+**Drive Placeholders:** You can use drive names (like `MAIN_DRIVE/Pictures`) in sync_pairs. If a drive is not available, the program will skip it gracefully with a warning message.
 
 **Bidirectional Sync:** Files are synced in both directions:
 - If a file in `target` has a later date OR doesn't exist in `source` → copied from `target` to `source`
@@ -432,7 +440,8 @@ The sync logic is simple and smart:
 
 ### Key Settings:
 
-- **`sync_pairs`**: List of folder pairs to synchronize (bidirectional)
+- **`drives`**: Optional drive shortcuts (e.g., `"MAIN_DRIVE": "/Users/yourname"`) - use these in sync_pairs for convenience
+- **`sync_pairs`**: List of folder pairs to synchronize (bidirectional) - can use drive placeholders or direct paths
 - **`exclude_patterns`**: Patterns to skip during sync (e.g., `.git`, `node_modules`)
 - **`output_base`**: Where to create soft link folders for organized files
 - **`enable_content_analysis`**: Enable/disable ML content discovery
