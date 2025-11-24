@@ -1,15 +1,27 @@
 {
     "comment": "Template configuration file - Copy to organizer_config.json and customize",
+    "drives": {
+        "MAIN_DRIVE": "/Users/yourname",
+        "EXTERNAL_DRIVE": "/Volumes/YourExternalDrive",
+        "PROTON_DRIVE": "/Users/yourname/ProtonDrive",
+        "GOOGLE_DRIVE": "/Users/yourname/GoogleDrive/MyFiles/",
+        "comment": "Define drive shortcuts here. You can use these names in sync_pairs below. If a drive is not available, the program will skip it gracefully."
+    },
     "sync_pairs": [
         {
-            "comment": "Example: Sync between two folders",
-            "source": "/Users/yourname/dev",
-            "target": "/Volumes/ExternalDrive/dev"
+            "comment": "Example: Using drive placeholders (recommended)",
+            "source": "MAIN_DRIVE/dev",
+            "target": "EXTERNAL_DRIVE/dev"
         },
         {
-            "comment": "You can have multiple sync pairs",
-            "source": "/Users/yourname/Documents",
-            "target": "/Users/yourname/GoogleDrive/Documents"
+            "comment": "Example: Using drive placeholders with cloud storage",
+            "source": "MAIN_DRIVE/Documents",
+            "target": "GOOGLE_DRIVE/Documents"
+        },
+        {
+            "comment": "Example: You can also use direct paths",
+            "source": "/Users/yourname/Pictures",
+            "target": "/Volumes/ExternalDrive/Pictures"
         }
     ],
     "exclude_patterns": [
