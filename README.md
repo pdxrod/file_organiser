@@ -62,11 +62,12 @@ The desktop app gives you a friendly interface to:
 - **Behavior:** Scans once, organizes everything, then exits
 
 ### 🔄 Sync Only
-**What it does:** Only synchronizes folders between drives (no file organization)
-- **Files affected:** Copies files between source and target folders using rsync
-- **Output:** Files copied to target folders, no organization into categories
-- **When to use:** Just want to backup/sync files without organizing them
-- **Behavior:** Fast file copying without ML analysis or categorization
+**What it does:** Bidirectionally synchronizes folder pairs (no file organization)
+- **Files affected:** Copies files between source and target folders (bidirectional sync)
+- **Sync logic:** If file in target is newer or missing in source → copy from target to source, otherwise copy from source to target
+- **Output:** Files synchronized between folder pairs, no organization into categories
+- **When to use:** Just want to backup/sync files between locations without organizing them
+- **Behavior:** Fast bidirectional file synchronization without ML analysis or categorization
 
 ### 🗑️ Deduplicate
 **What it does:** Finds and removes duplicate soft links in your organized folder
@@ -146,21 +147,31 @@ cp organizer_config.template.json organizer_config.json
 nano organizer_config.json  # or use your favorite editor
 ```
 
-Edit the `"drives"` section with your actual paths:
+Edit the `"sync_pairs"` section with your folder pairs to sync:
 
 ```json
 {
-    "drives": {
-        "MAIN_DRIVE": "/Users/yourname",
-        "GOOGLE_DRIVE": "/Users/yourname/Google Drive",
-        "PROTON_DRIVE": "/Users/yourname/ProtonDrive"
-    },
-    "source_folders": [
-        "MAIN_DRIVE/Documents",
-        "MAIN_DRIVE/Pictures"
+    "sync_pairs": [
+        {
+            "source": "/Users/yourname/dev",
+            "target": "/Volumes/ExternalDrive/dev"
+        },
+        {
+            "source": "/Users/yourname/Documents",
+            "target": "/Users/yourname/GoogleDrive/Documents"
+        }
+    ],
+    "exclude_patterns": [
+        ".git",
+        "node_modules",
+        "__pycache__"
     ]
 }
 ```
+
+**Bidirectional Sync:** Files are synced in both directions:
+- If a file in `target` has a later date OR doesn't exist in `source` → copied from `target` to `source`
+- Otherwise → copied from `source` to `target`
 
 ---
 
@@ -264,14 +275,14 @@ Automatically organizes by file type:
 - **EasyOCR**: Enabled by default, works on CPU (slower than Tesseract but more accurate)
 - **CLIP**: Disabled by default (very slow on CPU ~30min first load). Enable with `"use_clip": true` in config if you have a GPU
 
-### 5. **Advanced Features** (Production Mode)
+### 5. **Bidirectional Folder Synchronization** (Production Mode)
 
-- **Folder Synchronization**: Keep folder pairs in sync with rsync
+- **Simple Configuration**: Just specify folder pairs to sync - no complex drive mappings
+- **Bidirectional Sync**: Automatically syncs files in both directions based on file dates
+- **Smart Logic**: If file in target is newer or missing in source → copy from target to source, otherwise copy from source to target
 - **Concurrent Chunked Sync**: Large folders sync in parallel chunks for faster progress
 - **Cloud Storage Optimized**: Special flags for Google Drive, ProtonDrive, and other FUSE mounts
-- **Duplicate Detection**: Find and remove duplicate files
-- **Git Version Control**: Track all changes automatically
-- **Background Backup**: Backup to external or cloud drives with retry logic
+- **Exclude Patterns**: Skip `.git`, `node_modules`, and other patterns you don't want synced
 - **Robust Error Handling**: Graceful handling of flaky drives and timeouts
 
 ## 📁 Expected Output
@@ -353,23 +364,44 @@ Edit `organizer_config.json`:
 
 ```json
 {
-    "scan_interval": 3600,
-    "source_folders": [
-        "/path/to/documents",
-        "/path/to/pictures"
+    "sync_pairs": [
+        {
+            "source": "/Users/yourname/dev",
+            "target": "/Volumes/ExternalDrive/dev"
+        },
+        {
+            "source": "/Users/yourname/Documents",
+            "target": "/Users/yourname/GoogleDrive/Documents"
+        }
     ],
-    "exclude_folders": [
-        "/path/to/backup",
-        "/path/to/.git"
+    "exclude_patterns": [
+        ".git",
+        "node_modules",
+        "__pycache__",
+        ".DS_Store",
+        "*.pyc",
+        ".venv",
+        "venv"
     ],
-    "output_base": "/path/to/organized",
+    "output_base": "~/organized",
     "enable_content_analysis": true,
     "enable_duplicate_detection": false,
-    "enable_folder_sync": false,
-    "enable_git_tracking": false,
-    "enable_proton_backup": false
+    "enable_folder_sync": true
 }
 ```
+
+### How Bidirectional Sync Works
+
+The sync logic is simple and smart:
+
+1. **For each file in both folders:**
+   - If file exists only in `target` → copy to `source`
+   - If file exists only in `source` → copy to `target`
+   - If file exists in both:
+     - If `target` is newer → copy from `target` to `source`
+     - Otherwise → copy from `source` to `target`
+
+2. **Exclude patterns** (like `.git`, `node_modules`) are skipped automatically
 
 ### Advanced Configuration
 
@@ -383,43 +415,31 @@ Edit `organizer_config.json`:
         "min_word_length": 5,
         "stop_words_enabled": true
     },
-    "sync_pairs": [
-        {
-            "source": "/path/to/source",
-            "target": "/path/to/target"
-        }
-    ],
-    "backup_directories": [
-        "/path/to/backup1",
-        "/path/to/backup2"
-    ],
-    "backup_drive_path": "/path/to/backupdrive",
     "use_rsync": true,
     "rsync_checksum_mode": "timestamp",
-    "rsync_size_only": true,
+    "rsync_size_only": false,
     "rsync_additional_args": [
         "--omit-dir-times",
         "--no-perms", 
         "--no-group",
-        "--no-owner",
-        "--delete-after"
+        "--no-owner"
     ],
-    "sync_chunk_subfolders": 10,
-    "sync_chunk_concurrency": 3,
-    "sync_timeout_minutes": 180
+    "sync_chunk_subfolders": 30,
+    "sync_chunk_concurrency": 1,
+    "sync_timeout_minutes": 60
 }
 ```
 
 ### Key Settings:
 
-- **`source_folders`**: Directories to scan
-- **`exclude_folders`**: Directories to skip (avoid recursion!)
-- **`output_base`**: Where to create soft link folders
+- **`sync_pairs`**: List of folder pairs to synchronize (bidirectional)
+- **`exclude_patterns`**: Patterns to skip during sync (e.g., `.git`, `node_modules`)
+- **`output_base`**: Where to create soft link folders for organized files
 - **`enable_content_analysis`**: Enable/disable ML content discovery
+- **`enable_folder_sync`**: Enable/disable folder synchronization
 - **`ml_content_analysis`**: Tune category discovery thresholds
-- **`use_rsync`**: Use rsync for fast folder synchronization
-- **`rsync_size_only`**: Only compare file sizes (faster for cloud storage)
-- **`rsync_additional_args`**: Extra rsync flags to reduce FUSE overhead
+- **`use_rsync`**: Use rsync for fast folder synchronization (fallback to Python if unavailable)
+- **`rsync_checksum_mode`**: `"timestamp"` (fast) or `"checksum"` (thorough but slow)
 - **`sync_chunk_concurrency`**: Number of parallel sync operations
 - **`sync_timeout_minutes`**: Timeout for large folder syncs
 
