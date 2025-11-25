@@ -1172,7 +1172,12 @@ class EnhancedFileOrganizer:
             # In test mode, save to project directory
             self.progress_file = Path.cwd() / '.file_organizer_progress.json'
             # Override config for test mode - use test/ directory instead of user's paths
+            # Create a test source_folders list for backward compatibility (used by file scanning)
+            if 'source_folders' not in self.config:
+                self.config['source_folders'] = []
             self.config['source_folders'] = [str(Path.cwd() / 'test')]
+            if 'exclude_folders' not in self.config:
+                self.config['exclude_folders'] = []
             self.config['exclude_folders'] = [str(Path.cwd() / 'test' / 'organized')]
             self.config['output_base'] = str(Path.cwd() / 'test' / 'organized')
             self.config['enable_duplicate_detection'] = False
@@ -1479,12 +1484,19 @@ class EnhancedFileOrganizer:
         warnings = []
         
         # Check required top-level keys
-        required_keys = ['source_folders', 'exclude_folders', 'output_base']
+        required_keys = ['output_base']
         for key in required_keys:
             if key not in self.config:
                 errors.append(f"Missing required key: '{key}'")
         
-        # Validate source_folders
+        # Validate sync_pairs (required for sync functionality)
+        if 'sync_pairs' in self.config:
+            if not isinstance(self.config['sync_pairs'], list):
+                errors.append("'sync_pairs' must be a list")
+            elif len(self.config['sync_pairs']) == 0 and self.config.get('enable_folder_sync', False):
+                warnings.append("'sync_pairs' is empty but 'enable_folder_sync' is true - no folders will be synced")
+        
+        # Legacy support: validate source_folders if present (for backward compatibility)
         if 'source_folders' in self.config:
             if not isinstance(self.config['source_folders'], list):
                 errors.append("'source_folders' must be a list")
@@ -1591,11 +1603,14 @@ class EnhancedFileOrganizer:
     
     def _resolve_drive_placeholders(self):
         """Resolve drive placeholders in config paths (production mode only)."""
-        # Resolve drive placeholders in config
-        self._resolve_placeholders('source_folders')
-        self._resolve_placeholders('exclude_folders')
+        # Resolve drive placeholders in config (only if they exist - they're optional now)
+        if 'source_folders' in self.config:
+            self._resolve_placeholders('source_folders')
+        if 'exclude_folders' in self.config:
+            self._resolve_placeholders('exclude_folders')
         self._resolve_placeholder_value('output_base')
-        self._resolve_placeholder_value('backup_drive_path')
+        if 'backup_drive_path' in self.config:
+            self._resolve_placeholder_value('backup_drive_path')
         
         # Resolve drive placeholders in sync_pairs
         if 'sync_pairs' in self.config:
@@ -1721,8 +1736,9 @@ class EnhancedFileOrganizer:
         """Check if path should be excluded from processing."""
         path_str = str(path)
         
-        # Check exclude_folders (absolute paths)
-        for exclude in self.config.get('exclude_folders', []):
+        # Check exclude_folders (absolute paths) - optional, defaults to empty list
+        exclude_folders = self.config.get('exclude_folders', [])
+        for exclude in exclude_folders:
             if path_str.startswith(exclude):
                 return True
         
@@ -2416,7 +2432,13 @@ class EnhancedFileOrganizer:
         
         self.logger.info("Scanning for duplicate files")
         
-        directories = [Path(folder) for folder in self.config['source_folders']]
+        # Get source folders (use empty list if not configured)
+        source_folders = self.config.get('source_folders', [])
+        if not source_folders:
+            self.logger.warning("No source_folders configured - skipping duplicate detection")
+            return
+        
+        directories = [Path(folder) for folder in source_folders]
         duplicates = self.folder_sync.find_duplicates_in_directories(directories)
         
         if duplicates:
@@ -2469,28 +2491,36 @@ class EnhancedFileOrganizer:
         # Step 1: Scan and organize files FIRST (gives immediate value before time-consuming operations)
         self.logger.info("Step 1: Scanning and organizing files...")
         
-        scan_folders = self.config['source_folders']
+        # Get source folders (use empty list if not configured)
+        scan_folders = self.config.get('source_folders', [])
         completed_scan_folders = self.progress.get('scan_folders_completed', [])
         
-        for i, folder in enumerate(scan_folders):
-            if hasattr(self, 'running') and not self.running:
-                return
-            
-            # Skip already completed folders
-            if i in completed_scan_folders:
-                self.logger.info(f"Skipping already scanned folder: {folder}")
-                continue
-            
-            folder_path = Path(folder)
-            if folder_path.exists():
-                self.logger.info(f"Scanning folder {i+1}/{len(scan_folders)}: {folder}")
-                self._safe_path_operation(self.scan_directory, folder_path)
+        if not scan_folders:
+            self.logger.info("No source_folders configured - skipping file scanning")
+            self.progress['scan_folders_completed'] = []
+            self._save_progress()
+            # Continue to next step (sync, dedupe, etc.)
+        else:
+            completed_scan_folders = self.progress.get('scan_folders_completed', [])
+            for i, folder in enumerate(scan_folders):
+                if hasattr(self, 'running') and not self.running:
+                    return
                 
-                # Mark this folder as completed
-                completed_scan_folders.append(i)
-                self.progress['scan_folders_completed'] = completed_scan_folders
-                self.progress['current_step'] = 'scan'
-                self._save_progress()
+                # Skip already completed folders
+                if i in completed_scan_folders:
+                    self.logger.info(f"Skipping already scanned folder: {folder}")
+                    continue
+                
+                folder_path = Path(folder)
+                if folder_path.exists():
+                    self.logger.info(f"Scanning folder {i+1}/{len(scan_folders)}: {folder}")
+                    self._safe_path_operation(self.scan_directory, folder_path)
+                    
+                    # Mark this folder as completed
+                    completed_scan_folders.append(i)
+                    self.progress['scan_folders_completed'] = completed_scan_folders
+                    self.progress['current_step'] = 'scan'
+                    self._save_progress()
         
         # Step 2: Discover content categories based on learned keywords
         if hasattr(self, 'running') and not self.running:
