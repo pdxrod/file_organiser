@@ -162,9 +162,7 @@ class DynamicContentAnalyzer:
         """Lazy-load EasyOCR reader."""
         if self._easyocr_reader is None and easyocr:
             try:
-                self.logger.info("Loading EasyOCR model (first time only)...")
                 self._easyocr_reader = easyocr.Reader(['en'], gpu=False)
-                self.logger.info("EasyOCR loaded successfully")
             except Exception as e:
                 self.logger.warning(f"Could not load EasyOCR: {e}")
         return self._easyocr_reader
@@ -2078,7 +2076,6 @@ class EnhancedFileOrganizer:
             
             # OCR for images
             elif extension in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp']:
-                self.logger.info(f"Processing image: {file_path.name}")
                 image = Image.open(file_path)
                 
                 all_text = []
@@ -2094,7 +2091,7 @@ class EnhancedFileOrganizer:
                         easyocr_text = ' '.join([text for (bbox, text, conf) in ocr_results if conf > 0.3])
                         if easyocr_text.strip():
                             all_text.append(easyocr_text)
-                            self.logger.info(f"EasyOCR found: {easyocr_text[:50]}...")
+                            self.logger.info(f"EasyOCR on {file_path.name}: {easyocr_text[:50]}...")
                     except Exception as e:
                         self.logger.debug(f"EasyOCR failed: {e}")
                 
@@ -2360,32 +2357,52 @@ class EnhancedFileOrganizer:
                             if root_files:
                                 self.logger.info(f"  Syncing {len(root_files)} root-level files...")
                                 # Use bidirectional sync for root files
-                                self.folder_sync.sync_directories(source, target, sync_mode='bidirectional')
+                                root_sync_success = self.folder_sync.sync_directories(source, target, sync_mode='bidirectional')
+                            
+                            # Mark chunked sync as completed if all chunks succeeded
+                            # (We assume success if we got here without exceptions)
+                            completed_pairs.append(i)
+                            self.progress['sync_pairs_completed'] = completed_pairs
+                            self.progress['current_step'] = 'sync'
+                            self._save_progress()
                         else:
                             # Normal sync for smaller folders
                             self.logger.info(f"Syncing ({i+1}/{len(sync_pairs)}): {source} <-> {target} (bidirectional)")
-                            self.folder_sync.sync_directories(source, target, sync_mode='bidirectional')
+                            sync_success = self.folder_sync.sync_directories(source, target, sync_mode='bidirectional')
+                            if sync_success:
+                                completed_pairs.append(i)
+                                self.progress['sync_pairs_completed'] = completed_pairs
+                                self.progress['current_step'] = 'sync'
+                                self._save_progress()
+                            else:
+                                self.logger.warning(f"Sync failed for pair {i+1}, will retry on next run")
                     except Exception as e:
                         self.logger.error(f"Error analyzing source folder {source}: {e}")
                         # Fall back to normal sync
                         self.logger.info(f"Syncing ({i+1}/{len(sync_pairs)}): {source} <-> {target} (bidirectional)")
-                        self.folder_sync.sync_directories(source, target, sync_mode='bidirectional')
+                        sync_success = self.folder_sync.sync_directories(source, target, sync_mode='bidirectional')
+                        if sync_success:
+                            completed_pairs.append(i)
+                            self.progress['sync_pairs_completed'] = completed_pairs
+                            self.progress['current_step'] = 'sync'
+                            self._save_progress()
+                        else:
+                            self.logger.warning(f"Sync failed for pair {i+1}, will retry on next run")
                 else:
                     # Not a directory, sync normally
                     self.logger.info(f"Syncing ({i+1}/{len(sync_pairs)}): {source} <-> {target} (bidirectional)")
-                    self.folder_sync.sync_directories(source, target, sync_mode='bidirectional')
-                
-                # Mark this pair as completed
-                completed_pairs.append(i)
-                self.progress['sync_pairs_completed'] = completed_pairs
-                self.progress['current_step'] = 'sync'
-                self._save_progress()
+                    sync_success = self.folder_sync.sync_directories(source, target, sync_mode='bidirectional')
+                    if sync_success:
+                        completed_pairs.append(i)
+                        self.progress['sync_pairs_completed'] = completed_pairs
+                        self.progress['current_step'] = 'sync'
+                        self._save_progress()
+                    else:
+                        self.logger.warning(f"Sync failed for pair {i+1}, will retry on next run")
             else:
                 self.logger.warning(f"Source folder does not exist: {source}")
-                # Still mark as completed so we don't get stuck
-                completed_pairs.append(i)
-                self.progress['sync_pairs_completed'] = completed_pairs
-                self._save_progress()
+                # Don't mark as completed if source doesn't exist - we want to retry
+                self.logger.info(f"Will retry sync pair {i+1} on next run when source becomes available")
     
     def remove_duplicates_across_system(self) -> None:
         """Find and remove duplicates across all source folders."""
@@ -2847,36 +2864,57 @@ def main():
     # In production mode, if not a one-shot scan and not explicitly disabled, daemonize
     if production_mode and not args.scan_once and not args.no_daemon and not args.internal_daemon:
         try:
+            # Redirect stderr to log file so errors are captured
+            log_file = Path.home() / '.file_organizer.log'
+            log_handle = open(log_file, 'a')
             background_args = [sys.executable, __file__] + [a for a in sys.argv[1:] if a != '--force'] + ['--internal-daemon']
-            subprocess.Popen(background_args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, start_new_session=True)
+            subprocess.Popen(background_args, stdout=log_handle, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
+            log_handle.close()
             print("Started File Organizer in background (daemon mode).")
             print("View logs:   ./manage_organizer.sh log")
             print("Stop daemon: ./manage_organizer.sh stop")
             return
         except Exception as e:
             print(f"Failed to start in background: {e}")
+            import traceback
+            traceback.print_exc()
             # Fall through and run in foreground
 
     # Create organizer
-    organizer = EnhancedFileOrganizer(config_file, test_mode=not production_mode)
+    try:
+        organizer = EnhancedFileOrganizer(config_file, test_mode=not production_mode)
+    except Exception as e:
+        print(f"ERROR: Failed to initialize File Organizer: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
     
     # Execute based on options
-    if production_mode and args.sync_only:
-        organizer.sync_configured_folders()
-    elif production_mode and args.dedupe_only:
-        organizer.remove_duplicates_across_system()
-    elif args.scan_once:
-        # Set up signal handler for scan-once mode too
-        def signal_handler(signum, frame):
-            print("\n\nInterrupted by user. Exiting...")
-            sys.exit(0)
-        
-        signal.signal(signal.SIGINT, signal_handler)
-        signal.signal(signal.SIGTERM, signal_handler)
-        
-        organizer.run_full_cycle()
-    else:
-        organizer.run_daemon()
+    try:
+        if production_mode and args.sync_only:
+            organizer.sync_configured_folders()
+        elif production_mode and args.dedupe_only:
+            organizer.remove_duplicates_across_system()
+        elif args.scan_once:
+            # Set up signal handler for scan-once mode too
+            def signal_handler(signum, frame):
+                print("\n\nInterrupted by user. Exiting...")
+                sys.exit(0)
+            
+            signal.signal(signal.SIGINT, signal_handler)
+            signal.signal(signal.SIGTERM, signal_handler)
+            
+            organizer.run_full_cycle()
+        else:
+            organizer.run_daemon()
+    except KeyboardInterrupt:
+        print("\n\nInterrupted by user. Exiting...")
+        sys.exit(0)
+    except Exception as e:
+        print(f"ERROR: Unexpected error: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
 
 
 if __name__ == '__main__':
