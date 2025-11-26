@@ -913,7 +913,11 @@ class FolderSynchronizer:
                     except Exception as e:
                         self.logger.error(f"Failed to copy {source_file} to {dest_file}: {e}")
             
-            self.logger.info(f"Bidirectional sync complete: {copied_source_to_target} files {source_str} → {target_str}, {copied_target_to_source} files {target_str} → {source_str}")
+            if copied_source_to_target > 0 or copied_target_to_source > 0:
+                if copied_target_to_source > 0:
+                    self.logger.info(f"Bidirectional sync: {copied_source_to_target} files {source_str} → {target_str}, {copied_target_to_source} files {target_str} → {source_str}")
+                else:
+                    self.logger.info(f"Bidirectional sync: {copied_source_to_target} files {source_str} → {target_str}")
             return True
             
         except Exception as e:
@@ -1651,7 +1655,7 @@ class EnhancedFileOrganizer:
             # Console handler
             console_handler = logging.StreamHandler()
             console_formatter = logging.Formatter(
-                '%(asctime)s - %(levelname)s - %(message)s',
+                '%(asctime)s - %(message)s',
                 datefmt='%Y-%m-%d %H:%M:%S'
             )
             console_handler.setFormatter(console_formatter)
@@ -2306,9 +2310,6 @@ class EnhancedFileOrganizer:
             
             # Skip already completed pairs
             if i in completed_pairs:
-                source = sync_pair['source']
-                target = sync_pair['target']
-                self.logger.info(f"✓ Skipping already completed sync: {source} -> {target}")
                 continue
             
             # Paths should already be resolved from drive placeholders, just expand ~ and resolve
@@ -2340,12 +2341,8 @@ class EnhancedFileOrganizer:
                         num_subfolders = len(subfolders)
                         
                         if num_subfolders >= chunk_threshold:
-                            self.logger.info(f"Large folder detected: {source} has {num_subfolders} subfolders")
-                            self.logger.info(f"Syncing in chunks (one subfolder at a time for better progress tracking)")
-                            
                             # Sync subfolders with limited concurrency
                             max_workers = max(1, int(self.config.get('sync_chunk_concurrency', 2)))
-                            self.logger.info(f"Chunked concurrency: {max_workers}")
                             
                             def sync_one(subfolder_path: Path):
                                 try:
@@ -2365,19 +2362,20 @@ class EnhancedFileOrganizer:
                                     completed += 1
                                     try:
                                         ok = future.result()
-                                        status = "OK" if ok else "FAIL"
                                         subfolder_source = str(sf)
                                         subfolder_target = str(target / sf.name)
-                                        self.logger.info(f"  Chunk {completed}/{num_subfolders}: {sf.name} [{status}] {subfolder_source} → {subfolder_target}")
+                                        if ok:
+                                            self.logger.info(f"{subfolder_source} → {subfolder_target}")
+                                        else:
+                                            self.logger.warning(f"{subfolder_source} → {subfolder_target} [FAILED]")
                                     except Exception as e:
                                         subfolder_source = str(sf)
                                         subfolder_target = str(target / sf.name)
-                                        self.logger.error(f"  Chunk {completed}/{num_subfolders}: {sf.name} [ERROR: {e}] {subfolder_source} → {subfolder_target}")
+                                        self.logger.error(f"{subfolder_source} → {subfolder_target} [ERROR: {e}]")
                             
                             # Sync root level files (if any)
                             root_files = [f for f in source.iterdir() if f.is_file()]
                             if root_files:
-                                self.logger.info(f"  Syncing {len(root_files)} root-level files...")
                                 # Use bidirectional sync for root files
                                 root_sync_success = self.folder_sync.sync_directories(source, target, sync_mode='bidirectional')
                             
@@ -2389,7 +2387,7 @@ class EnhancedFileOrganizer:
                             self._save_progress()
                         else:
                             # Normal sync for smaller folders
-                            self.logger.info(f"Syncing ({i+1}/{len(sync_pairs)}): {source} <-> {target} (bidirectional)")
+                            self.logger.info(f"Syncing: {source} → {target}")
                             sync_success = self.folder_sync.sync_directories(source, target, sync_mode='bidirectional')
                             if sync_success:
                                 completed_pairs.append(i)
@@ -2401,7 +2399,7 @@ class EnhancedFileOrganizer:
                     except Exception as e:
                         self.logger.error(f"Error analyzing source folder {source}: {e}")
                         # Fall back to normal sync
-                        self.logger.info(f"Syncing ({i+1}/{len(sync_pairs)}): {source} <-> {target} (bidirectional)")
+                        self.logger.info(f"Syncing: {source} → {target}")
                         sync_success = self.folder_sync.sync_directories(source, target, sync_mode='bidirectional')
                         if sync_success:
                             completed_pairs.append(i)
@@ -2412,7 +2410,7 @@ class EnhancedFileOrganizer:
                             self.logger.warning(f"Sync failed for pair {i+1}, will retry on next run")
                 else:
                     # Not a directory, sync normally
-                    self.logger.info(f"Syncing ({i+1}/{len(sync_pairs)}): {source} <-> {target} (bidirectional)")
+                    self.logger.info(f"Syncing: {source} → {target}")
                     sync_success = self.folder_sync.sync_directories(source, target, sync_mode='bidirectional')
                     if sync_success:
                         completed_pairs.append(i)
