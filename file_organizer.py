@@ -914,10 +914,7 @@ class FolderSynchronizer:
                         self.logger.error(f"Failed to copy {source_file} to {dest_file}: {e}")
             
             if copied_source_to_target > 0 or copied_target_to_source > 0:
-                if copied_target_to_source > 0:
-                    self.logger.info(f"Bidirectional sync: {copied_source_to_target} files {source_str} → {target_str}, {copied_target_to_source} files {target_str} → {source_str}")
-                else:
-                    self.logger.info(f"Bidirectional sync: {copied_source_to_target} files {source_str} → {target_str}")
+                self.logger.info(f"sync: {copied_source_to_target} files {source_str} → {target_str}, {copied_target_to_source} files target → source")
             return True
             
         except Exception as e:
