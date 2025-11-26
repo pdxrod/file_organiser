@@ -788,8 +788,6 @@ class FolderSynchronizer:
                     self.logger.warning(f"Target drive {target_parent} is {used_percent:.1f}% full (max: {max_usage}%)")
                     self.logger.warning(f"Skipping sync to prevent filling drive")
                     return False
-                else:
-                    self.logger.info(f"Target drive usage: {used_percent:.1f}% (max: {max_usage}%)")
             except Exception as e:
                 self.logger.debug(f"Could not check disk space: {e}")
                 
@@ -827,6 +825,9 @@ class FolderSynchronizer:
         """Bidirectional sync: copy from target to source if target is newer or missing in source, otherwise copy from source to target."""
         copied_source_to_target = 0
         copied_target_to_source = 0
+        # Use paths for logging
+        source_str = str(source)
+        target_str = str(target)
         
         try:
             # Collect all files from both directories
@@ -912,7 +913,7 @@ class FolderSynchronizer:
                     except Exception as e:
                         self.logger.error(f"Failed to copy {source_file} to {dest_file}: {e}")
             
-            self.logger.info(f"Bidirectional sync complete: {copied_source_to_target} files source→target, {copied_target_to_source} files target→source")
+            self.logger.info(f"Bidirectional sync complete: {copied_source_to_target} files {source_str} → {target_str}, {copied_target_to_source} files {target_str} → {source_str}")
             return True
             
         except Exception as e:
@@ -1650,7 +1651,8 @@ class EnhancedFileOrganizer:
             # Console handler
             console_handler = logging.StreamHandler()
             console_formatter = logging.Formatter(
-                '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+                '%(asctime)s - %(levelname)s - %(message)s',
+                datefmt='%Y-%m-%d %H:%M:%S'
             )
             console_handler.setFormatter(console_formatter)
             logger.addHandler(console_handler)
@@ -2364,9 +2366,13 @@ class EnhancedFileOrganizer:
                                     try:
                                         ok = future.result()
                                         status = "OK" if ok else "FAIL"
-                                        self.logger.info(f"  Chunk {completed}/{num_subfolders}: {sf.name} [{status}]")
+                                        subfolder_source = str(sf)
+                                        subfolder_target = str(target / sf.name)
+                                        self.logger.info(f"  Chunk {completed}/{num_subfolders}: {sf.name} [{status}] {subfolder_source} → {subfolder_target}")
                                     except Exception as e:
-                                        self.logger.error(f"  Chunk {completed}/{num_subfolders}: {sf.name} [ERROR: {e}]")
+                                        subfolder_source = str(sf)
+                                        subfolder_target = str(target / sf.name)
+                                        self.logger.error(f"  Chunk {completed}/{num_subfolders}: {sf.name} [ERROR: {e}] {subfolder_source} → {subfolder_target}")
                             
                             # Sync root level files (if any)
                             root_files = [f for f in source.iterdir() if f.is_file()]
