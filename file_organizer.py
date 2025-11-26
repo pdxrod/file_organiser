@@ -765,15 +765,24 @@ class FolderSynchronizer:
             while target_parent.parent != target_parent and not target_parent.exists():
                 target_parent = target_parent.parent
             
-            # If parent doesn't exist or isn't writable, the drive is offline
+            # If parent doesn't exist, the drive is offline
             if not target_parent.exists():
                 self.logger.warning(f"Target drive offline or not accessible: {target}")
                 self.logger.warning(f"Skipping sync - drive at {target_parent} not found")
                 return False
             
-            if not os.access(target_parent, os.W_OK):
+            # Test write access by actually trying to create a test file
+            # This is more reliable than os.access() on macOS external drives
+            try:
+                # Ensure target directory exists for the test
+                target.mkdir(parents=True, exist_ok=True)
+                # Try to create a temporary test file
+                test_file = target / f".write_test_{os.getpid()}"
+                test_file.touch()
+                test_file.unlink()  # Clean up immediately
+            except (OSError, PermissionError) as e:
                 self.logger.warning(f"Target drive not writable: {target}")
-                self.logger.warning(f"Skipping sync - no write access to {target_parent}")
+                self.logger.warning(f"Skipping sync - no write access to {target}: {e}")
                 return False
             
             # Check disk space on target drive
