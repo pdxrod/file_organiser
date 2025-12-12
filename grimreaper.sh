@@ -32,8 +32,8 @@ EXCLUDE_PATTERNS=(
     # C/C++
     "CMakeFiles" "*.o" "*.so" "*.a"
 
-    # VCS
-    ".git" ".hg" ".svn" ".cvs"
+    # VCS ".git"
+    ".hg" ".svn" ".cvs"
 
     # macOS
     ".DS_Store" ".TemporaryItems" ".fseventsd" "Icon?" "._*"

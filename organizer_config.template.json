@@ -63,6 +63,7 @@
         ".gradle",
         ".m2",
         "tmp/cache",
+        ".tmp*",
         ".DS_Store",
         "*.pyc",
         "*.log",

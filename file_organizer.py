@@ -1469,8 +1469,16 @@ class EnhancedFileOrganizer:
         
         return resolved
     
-    def _resolve_path_with_drives(self, path: str, drives: Dict) -> str:
-        """Resolve a path containing drive placeholders."""
+    def _resolve_path_with_drives(self, path: str, drives: Dict, max_depth: int = 10) -> str:
+        """
+        Recursively resolve a path containing drive placeholders.
+        Handles nested drive references like PROTON_DRIVE: "MAIN_DRIVE/ProtonDrive"
+        """
+        if max_depth <= 0:
+            # Prevent infinite recursion
+            self.logger.warning(f"Max recursion depth reached resolving path: {path}")
+            return str(Path(path).expanduser())
+        
         # Check if path starts with a drive name
         for drive_name, drive_path in drives.items():
             # Skip comment keys
@@ -1478,7 +1486,10 @@ class EnhancedFileOrganizer:
                 continue
             # Check if path starts with drive name followed by '/' or is exactly the drive name
             if path.startswith(drive_name + '/') or path == drive_name:
+                # Replace the drive name with its path
                 resolved = path.replace(drive_name, drive_path, 1)
+                # Recursively resolve any remaining drive placeholders in the resolved path
+                resolved = self._resolve_path_with_drives(resolved, drives, max_depth - 1)
                 # Expand ~ if present
                 return str(Path(resolved).expanduser())
         
@@ -1614,6 +1625,51 @@ class EnhancedFileOrganizer:
     
     def _resolve_drive_placeholders(self):
         """Resolve drive placeholders in config paths (production mode only)."""
+        # FIRST: Resolve drive definitions themselves (in case they reference other drives)
+        # This handles cases like PROTON_DRIVE: "MAIN_DRIVE/ProtonDrive"
+        # Use iterative resolution to handle interdependent drives
+        if 'drives' in self.config:
+            drives = self.config['drives'].copy()  # Work with a copy
+            resolved_drives = {}
+            max_iterations = 10  # Prevent infinite loops
+            
+            # Initialize resolved_drives with all drives (will resolve iteratively)
+            for drive_name, drive_path in drives.items():
+                if drive_name.startswith('comment'):
+                    resolved_drives[drive_name] = drive_path
+                elif isinstance(drive_path, str):
+                    resolved_drives[drive_name] = drive_path
+                else:
+                    resolved_drives[drive_name] = drive_path
+            
+            # Iterative resolution: keep resolving until no more changes
+            converged = False
+            for iteration in range(max_iterations):
+                changed = False
+                for drive_name, drive_path in resolved_drives.items():
+                    if drive_name.startswith('comment'):
+                        continue
+                    if isinstance(drive_path, str):
+                        # Try to resolve using current resolved_drives
+                        new_path = self._resolve_path_with_drives(drive_path, resolved_drives)
+                        # Only update if path actually changed (resolved a placeholder)
+                        if new_path != drive_path:
+                            resolved_drives[drive_name] = new_path
+                            changed = True
+                
+                if not changed:
+                    converged = True
+                    break  # All drives resolved
+            
+            if not converged:
+                self.logger.warning("Drive resolution did not converge after max iterations - some drives may not be fully resolved")
+            
+            # Update drives with resolved values
+            self.config['drives'] = resolved_drives
+        
+        # NOW resolve paths using the resolved drives
+        drives = self.config.get('drives', {})
+        
         # Resolve drive placeholders in config (only if they exist - they're optional now)
         if 'source_folders' in self.config:
             self._resolve_placeholders('source_folders')
@@ -1625,7 +1681,6 @@ class EnhancedFileOrganizer:
         
         # Resolve drive placeholders in sync_pairs
         if 'sync_pairs' in self.config:
-            drives = self.config.get('drives', {})
             for pair in self.config['sync_pairs']:
                 if 'source' in pair:
                     pair['source'] = self._resolve_path_with_drives(pair['source'], drives)
@@ -1633,12 +1688,10 @@ class EnhancedFileOrganizer:
                     pair['target'] = self._resolve_path_with_drives(pair['target'], drives)
     
     def _resolve_path(self, path: str) -> str:
-        """Resolve a path containing drive placeholders."""
-        drives = self.config['drives']
-        for drive_name, drive_path in drives.items():
-            if path.startswith(drive_name + '/') or path.startswith(drive_name):
-                return path.replace(drive_name, drive_path, 1)
-        return path
+        """Resolve a path containing drive placeholders (uses resolved drives)."""
+        drives = self.config.get('drives', {})
+        # Use the recursive resolver
+        return self._resolve_path_with_drives(path, drives)
     
     def _resolve_placeholders(self, config_key: str):
         """Resolve drive placeholders in a list of paths."""
