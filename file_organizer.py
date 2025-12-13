@@ -3,7 +3,7 @@
 File Organizer using AI/ML
 
 AI-Generated Code: Created using Cursor AI/ML with human guidance and testing.
-Author: Rod (https://github.com/pdxrod)
+Author: Rod McLaughlin (https://github.com/pdxrod)
 License: MIT (see LICENSE file)
 
 WARNING: This tool moves, copies, syncs, and can DELETE files. Use at your own risk.
