@@ -10,18 +10,22 @@
     "sync_pairs": [
         {
             "comment": "Example: Using drive placeholders (recommended)",
-            "source": "MAIN_DRIVE/dev",
-            "target": "EXTERNAL_DRIVE/dev"
+            "folders": ["MAIN_DRIVE/dev", "EXTERNAL_DRIVE/dev"]
         },
         {
             "comment": "Example: Using drive placeholders with cloud storage",
-            "source": "MAIN_DRIVE/Documents",
-            "target": "GOOGLE_DRIVE/Documents"
+            "folders": ["MAIN_DRIVE/Documents", "GOOGLE_DRIVE/Documents"]
         },
         {
             "comment": "Example: You can also use direct paths",
-            "source": "/Users/yourname/Pictures",
-            "target": "/Volumes/ExternalDrive/Pictures"
+            "folders": ["/Users/yourname/Pictures", "/Volumes/ExternalDrive/Pictures"]
+        },
+        {
+            "comment": "Note: Folders A and B are interchangeable. Files sync bidirectionally based on:",
+            "comment2": "  1. If file exists in A but not B → copy from A to B",
+            "comment3": "  2. If file exists in B but not A → copy from B to A",
+            "comment4": "  3. If file exists in both but A is newer → copy from A to B",
+            "comment5": "  4. If file exists in both but B is newer → copy from B to A"
         }
     ],
     "exclude_patterns": [

@@ -586,6 +586,35 @@ class FolderSynchronizer:
         self.logger = logger
         self.git_manager = git_manager
     
+    def _shorten_path(self, path: Path, base_paths: List[Path]) -> str:
+        """
+        Shorten a path for display by showing only the last few components.
+        If path is under one of base_paths, show relative path from there.
+        Otherwise, show last 3 components.
+        """
+        path_str = str(path)
+        
+        # Try to find if path is under any base path
+        for base in base_paths:
+            try:
+                rel = path.relative_to(base)
+                # If relative path has more than 3 components, show last 3
+                parts = rel.parts
+                if len(parts) > 3:
+                    return f"{base.name}/.../{'/'.join(parts[-3:])}"
+                else:
+                    return f"{base.name}/{str(rel)}"
+            except ValueError:
+                # Not under this base path
+                continue
+        
+        # Not under any base path, show last 3 components
+        parts = path.parts
+        if len(parts) > 3:
+            return f".../{'/'.join(parts[-3:])}"
+        else:
+            return str(path)
+    
     def _get_file_hash(self, file_path: Path, chunk_size: int = 8192) -> str:
         """Get hash of file content."""
         hasher = hashlib.md5()
@@ -820,7 +849,7 @@ class FolderSynchronizer:
         
         # For bidirectional sync, use manual Python sync (rsync is one-way)
         if sync_mode == 'bidirectional':
-            return self._sync_bidirectional(source, target, exclude_patterns)
+            return self._sync_bidirectional(source, target, exclude_patterns, [source, target])
         
         # For one-way sync, try rsync first (much faster)
         use_rsync = self.git_manager.config.get('use_rsync', True)
@@ -830,100 +859,116 @@ class FolderSynchronizer:
         # Fallback to manual Python sync (if rsync not available)
         return self._sync_one_way(source, target, sync_mode, exclude_patterns)
     
-    def _sync_bidirectional(self, source: Path, target: Path, exclude_patterns: List[str]) -> bool:
-        """Bidirectional sync: copy from target to source if target is newer or missing in source, otherwise copy from source to target."""
-        copied_source_to_target = 0
-        copied_target_to_source = 0
-        # Use paths for logging
-        source_str = str(source)
-        target_str = str(target)
+    def _sync_bidirectional(self, folder_a: Path, folder_b: Path, exclude_patterns: List[str], base_paths: List[Path] = None) -> bool:
+        """
+        Bidirectional sync between two folders (A and B are interchangeable):
+        1. If file exists in A but not in B → copy from A to B
+        2. If file exists in B but not in A → copy from B to A
+        3. If file exists in both but A is newer → copy from A to B
+        4. If file exists in both but B is newer → copy from B to A
+        """
+        if base_paths is None:
+            base_paths = [folder_a, folder_b]
+        
+        copied_a_to_b = 0
+        copied_b_to_a = 0
         
         try:
             # Collect all files from both directories
-            source_files = {}
-            target_files = {}
+            files_a = {}
+            files_b = {}
             
-            # Scan source directory
-            if source.exists():
-                for item in source.rglob('*'):
+            # Scan folder A
+            if folder_a.exists():
+                for item in folder_a.rglob('*'):
                     if item.is_file() and not self.should_exclude_from_sync(item, exclude_patterns):
-                        relative_path = item.relative_to(source)
-                        source_files[str(relative_path)] = item
+                        relative_path = item.relative_to(folder_a)
+                        files_a[str(relative_path)] = item
             
-            # Scan target directory
-            if target.exists():
-                for item in target.rglob('*'):
+            # Scan folder B
+            if folder_b.exists():
+                for item in folder_b.rglob('*'):
                     if item.is_file() and not self.should_exclude_from_sync(item, exclude_patterns):
-                        relative_path = item.relative_to(target)
-                        target_files[str(relative_path)] = item
+                        relative_path = item.relative_to(folder_b)
+                        files_b[str(relative_path)] = item
             
-            # Process all files (union of source and target)
-            all_files = set(source_files.keys()) | set(target_files.keys())
+            # Process all files (union of A and B)
+            all_files = set(files_a.keys()) | set(files_b.keys())
             
             for relative_path_str in all_files:
                 relative_path = Path(relative_path_str)
-                source_file = source_files.get(relative_path_str)
-                target_file = target_files.get(relative_path_str)
+                file_a = files_a.get(relative_path_str)
+                file_b = files_b.get(relative_path_str)
                 
                 # Determine copy direction
-                copy_from_target = False
+                copy_from_b = False
                 
-                if source_file is None and target_file is not None:
-                    # File exists only in target → copy to source
-                    copy_from_target = True
-                elif source_file is not None and target_file is None:
-                    # File exists only in source → copy to target
-                    copy_from_target = False
-                elif source_file is not None and target_file is not None:
+                if file_a is None and file_b is not None:
+                    # File exists only in B → copy from B to A
+                    copy_from_b = True
+                elif file_a is not None and file_b is None:
+                    # File exists only in A → copy from A to B
+                    copy_from_b = False
+                elif file_a is not None and file_b is not None:
                     # File exists in both → compare timestamps
                     try:
-                        source_mtime = source_file.stat().st_mtime
-                        target_mtime = target_file.stat().st_mtime
-                        # If target is newer, copy from target to source
-                        copy_from_target = (target_mtime > source_mtime)
+                        mtime_a = file_a.stat().st_mtime
+                        mtime_b = file_b.stat().st_mtime
+                        # If B is newer, copy from B to A
+                        copy_from_b = (mtime_b > mtime_a)
                     except Exception as e:
                         self.logger.warning(f"Could not compare timestamps for {relative_path}: {e}")
-                        # Default: copy from source to target
-                        copy_from_target = False
+                        # Default: copy from A to B
+                        copy_from_b = False
                 
                 # Perform the copy
-                if copy_from_target:
-                    # Copy from target to source
-                    dest_file = source / relative_path
+                if copy_from_b:
+                    # Copy from B to A
+                    dest_file = folder_a / relative_path
                     dest_file.parent.mkdir(parents=True, exist_ok=True)
                     try:
-                        if target_file.is_symlink():
-                            link_target = os.readlink(target_file)
+                        if file_b.is_symlink():
+                            link_target = os.readlink(file_b)
                             if dest_file.exists() or dest_file.is_symlink():
                                 dest_file.unlink()
                             dest_file.symlink_to(link_target)
-                            self.logger.debug(f"Copied symlink: {target_file} -> {dest_file}")
+                            self.logger.debug(f"Copied symlink: {file_b} -> {dest_file}")
                         else:
-                            shutil.copy2(target_file, dest_file)
-                            self.logger.debug(f"Copied: {target_file} -> {dest_file}")
-                        copied_target_to_source += 1
+                            shutil.copy2(file_b, dest_file)
+                            # Use shortened paths for output
+                            short_src = self._shorten_path(file_b, base_paths)
+                            short_dest = self._shorten_path(dest_file, base_paths)
+                            filename = relative_path.name
+                            self.logger.info(f"Copying {filename} from {short_src} to {short_dest}")
+                        copied_b_to_a += 1
                     except Exception as e:
-                        self.logger.error(f"Failed to copy {target_file} to {dest_file}: {e}")
+                        self.logger.error(f"Failed to copy {file_b} to {dest_file}: {e}")
                 else:
-                    # Copy from source to target
-                    dest_file = target / relative_path
+                    # Copy from A to B
+                    dest_file = folder_b / relative_path
                     dest_file.parent.mkdir(parents=True, exist_ok=True)
                     try:
-                        if source_file.is_symlink():
-                            link_target = os.readlink(source_file)
+                        if file_a.is_symlink():
+                            link_target = os.readlink(file_a)
                             if dest_file.exists() or dest_file.is_symlink():
                                 dest_file.unlink()
                             dest_file.symlink_to(link_target)
-                            self.logger.debug(f"Copied symlink: {source_file} -> {dest_file}")
+                            self.logger.debug(f"Copied symlink: {file_a} -> {dest_file}")
                         else:
-                            shutil.copy2(source_file, dest_file)
-                            self.logger.debug(f"Copied: {source_file} -> {dest_file}")
-                        copied_source_to_target += 1
+                            shutil.copy2(file_a, dest_file)
+                            # Use shortened paths for output
+                            short_src = self._shorten_path(file_a, base_paths)
+                            short_dest = self._shorten_path(dest_file, base_paths)
+                            filename = relative_path.name
+                            self.logger.info(f"Copying {filename} from {short_src} to {short_dest}")
+                        copied_a_to_b += 1
                     except Exception as e:
-                        self.logger.error(f"Failed to copy {source_file} to {dest_file}: {e}")
+                        self.logger.error(f"Failed to copy {file_a} to {dest_file}: {e}")
             
-            if copied_source_to_target > 0 or copied_target_to_source > 0:
-                self.logger.info(f"sync: {copied_source_to_target} files {source_str} → {target_str}, {copied_target_to_source} files target → source")
+            if copied_a_to_b > 0 or copied_b_to_a > 0:
+                short_a = self._shorten_path(folder_a, base_paths)
+                short_b = self._shorten_path(folder_b, base_paths)
+                self.logger.info(f"Sync complete: {copied_a_to_b} files A→B, {copied_b_to_a} files B→A ({short_a} ↔ {short_b})")
             return True
             
         except Exception as e:
@@ -1303,43 +1348,69 @@ class EnhancedFileOrganizer:
         if 'sync_pairs' in config and isinstance(config['sync_pairs'], list):
             drives = config.get('drives', {})
             for i, pair in enumerate(config['sync_pairs']):
-                if isinstance(pair, dict) and 'source' in pair and 'target' in pair:
-                    source = pair['source']
-                    target = pair['target']
-                    
-                    # Resolve drive placeholders first, then expand and resolve paths
-                    try:
-                        source_resolved_str = self._resolve_path_with_drives(source, drives)
-                        target_resolved_str = self._resolve_path_with_drives(target, drives)
-                        source_resolved = str(Path(source_resolved_str).expanduser().resolve())
-                        target_resolved = str(Path(target_resolved_str).expanduser().resolve())
-                    except Exception as e:
-                        errors.append(f"sync_pairs[{i}]: Invalid path - {e}")
+                if not isinstance(pair, dict):
+                    continue
+                
+                # Support both new format (folders) and old format (source/target)
+                if 'folders' in pair:
+                    # New format
+                    folders = pair['folders']
+                    if not isinstance(folders, list) or len(folders) != 2:
+                        errors.append(f"sync_pairs[{i}]: 'folders' must be a list of exactly 2 paths")
                         continue
-                    
-                    # Check if source and target are the same
-                    if source_resolved == target_resolved:
-                        errors.append(f"sync_pairs[{i}]: source and target are identical: '{source}' → '{source_resolved}'")
-                    
-                    # Check if one is a subdirectory of the other (potential circular reference)
-                    if source_resolved.startswith(target_resolved + '/') or target_resolved.startswith(source_resolved + '/'):
-                        warnings.append(f"sync_pairs[{i}]: potential circular reference - '{source}' and '{target}' are nested")
+                    path1 = folders[0]
+                    path2 = folders[1]
+                elif 'source' in pair and 'target' in pair:
+                    # Old format (backward compatibility)
+                    path1 = pair['source']
+                    path2 = pair['target']
+                else:
+                    # Comment-only entry, skip
+                    continue
+                
+                # Resolve drive placeholders first, then expand and resolve paths
+                try:
+                    path1_resolved_str = self._resolve_path_with_drives(path1, drives)
+                    path2_resolved_str = self._resolve_path_with_drives(path2, drives)
+                    path1_resolved = str(Path(path1_resolved_str).expanduser().resolve())
+                    path2_resolved = str(Path(path2_resolved_str).expanduser().resolve())
+                except Exception as e:
+                    errors.append(f"sync_pairs[{i}]: Invalid path - {e}")
+                    continue
+                
+                # Check if paths are the same
+                if path1_resolved == path2_resolved:
+                    errors.append(f"sync_pairs[{i}]: Folders are identical: '{path1}' → '{path1_resolved}'")
+                
+                # Check if one is a subdirectory of the other (potential circular reference)
+                if path1_resolved.startswith(path2_resolved + '/') or path2_resolved.startswith(path1_resolved + '/'):
+                    warnings.append(f"sync_pairs[{i}]: potential circular reference - folders are nested")
         
         # Check for output_base conflicts (if output_base exists)
         if 'output_base' in config:
             try:
                 output_resolved = str(Path(config['output_base']).expanduser().resolve())
-                # Check if output_base is inside any sync pair source or target
+                # Check if output_base is inside any sync pair folders
                 if 'sync_pairs' in config and isinstance(config['sync_pairs'], list):
                     for i, pair in enumerate(config['sync_pairs']):
-                        if isinstance(pair, dict) and 'source' in pair and 'target' in pair:
-                            try:
+                        if not isinstance(pair, dict):
+                            continue
+                        try:
+                            if 'folders' in pair:
+                                folders = pair['folders']
+                                if isinstance(folders, list) and len(folders) == 2:
+                                    path1_resolved = str(Path(folders[0]).expanduser().resolve())
+                                    path2_resolved = str(Path(folders[1]).expanduser().resolve())
+                                    if output_resolved.startswith(path1_resolved + '/') or output_resolved.startswith(path2_resolved + '/'):
+                                        warnings.append(f"output_base '{config['output_base']}' is inside sync_pairs[{i}] - this may cause issues")
+                            elif 'source' in pair and 'target' in pair:
+                                # Old format
                                 source_resolved = str(Path(pair['source']).expanduser().resolve())
                                 target_resolved = str(Path(pair['target']).expanduser().resolve())
                                 if output_resolved.startswith(source_resolved + '/') or output_resolved.startswith(target_resolved + '/'):
                                     warnings.append(f"output_base '{config['output_base']}' is inside sync_pairs[{i}] - this may cause issues")
-                            except Exception:
-                                pass
+                        except Exception:
+                            pass
             except Exception:
                 pass
         
@@ -1541,11 +1612,19 @@ class EnhancedFileOrganizer:
                         # Just a comment, skip validation
                         continue
                     
-                    # Otherwise, must have source and target
-                    if 'source' not in pair:
-                        errors.append(f"sync_pairs[{i}] missing 'source' (has: {list(pair.keys())})")
-                    if 'target' not in pair:
-                        errors.append(f"sync_pairs[{i}] missing 'target' (has: {list(pair.keys())})")
+                    # Support both new format (folders) and old format (source/target)
+                    if 'folders' in pair:
+                        # New format: folders must be a list of exactly 2 paths
+                        if not isinstance(pair['folders'], list):
+                            errors.append(f"sync_pairs[{i}]: 'folders' must be a list")
+                        elif len(pair['folders']) != 2:
+                            errors.append(f"sync_pairs[{i}]: 'folders' must contain exactly 2 paths (has {len(pair['folders'])})")
+                    elif 'source' in pair and 'target' in pair:
+                        # Old format (backward compatibility) - both required
+                        pass
+                    else:
+                        # Must have either 'folders' or both 'source' and 'target'
+                        errors.append(f"sync_pairs[{i}] must have either 'folders' (list of 2 paths) or 'source'/'target' (has: {list(pair.keys())})")
         
         # Validate ml_content_analysis if present
         if 'ml_content_analysis' in self.config:
@@ -1682,10 +1761,16 @@ class EnhancedFileOrganizer:
         # Resolve drive placeholders in sync_pairs
         if 'sync_pairs' in self.config:
             for pair in self.config['sync_pairs']:
-                if 'source' in pair:
-                    pair['source'] = self._resolve_path_with_drives(pair['source'], drives)
-                if 'target' in pair:
-                    pair['target'] = self._resolve_path_with_drives(pair['target'], drives)
+                if 'folders' in pair:
+                    # New format: resolve each folder in the list
+                    if isinstance(pair['folders'], list):
+                        pair['folders'] = [self._resolve_path_with_drives(folder, drives) for folder in pair['folders']]
+                else:
+                    # Old format (backward compatibility)
+                    if 'source' in pair:
+                        pair['source'] = self._resolve_path_with_drives(pair['source'], drives)
+                    if 'target' in pair:
+                        pair['target'] = self._resolve_path_with_drives(pair['target'], drives)
     
     def _resolve_path(self, path: str) -> str:
         """Resolve a path containing drive placeholders (uses resolved drives)."""
@@ -2352,7 +2437,7 @@ class EnhancedFileOrganizer:
             self.logger.error(f"Error scanning directory {directory}: {e}")
     
     def sync_configured_folders(self) -> None:
-        """Synchronize configured folder pairs."""
+        """Synchronize configured folder pairs (bidirectional sync)."""
         if not self.config['enable_folder_sync']:
             return
         
@@ -2362,41 +2447,65 @@ class EnhancedFileOrganizer:
         completed_pairs = self.progress.get('sync_pairs_completed', [])
         
         for i, sync_pair in enumerate(sync_pairs):
-            # Skip comment-only entries (defensive check - should be caught by validation)
-            if 'source' not in sync_pair or 'target' not in sync_pair:
-                self.logger.debug(f"Skipping sync_pairs[{i}] - comment-only entry")
-                continue
-            
             # Skip already completed pairs
             if i in completed_pairs:
                 continue
             
+            # Support both new format (folders) and old format (source/target) for backward compatibility
+            if 'folders' in sync_pair:
+                # New format: folders is a list of two paths
+                folders = sync_pair['folders']
+                if not isinstance(folders, list) or len(folders) != 2:
+                    self.logger.warning(f"sync_pairs[{i}]: 'folders' must be a list of exactly 2 paths")
+                    continue
+                folder_a_path = folders[0]
+                folder_b_path = folders[1]
+            elif 'source' in sync_pair and 'target' in sync_pair:
+                # Old format: source/target (backward compatibility)
+                folder_a_path = sync_pair['source']
+                folder_b_path = sync_pair['target']
+            else:
+                # Comment-only entry
+                self.logger.debug(f"Skipping sync_pairs[{i}] - comment-only entry")
+                continue
+            
             # Paths should already be resolved from drive placeholders, just expand ~ and resolve
-            source = Path(sync_pair['source']).expanduser().resolve()
-            target = Path(sync_pair['target']).expanduser().resolve()
+            folder_a = Path(folder_a_path).expanduser().resolve()
+            folder_b = Path(folder_b_path).expanduser().resolve()
             
-            # Check if source drive/path is available
-            source_parent = source
-            while source_parent.parent != source_parent and not source_parent.exists():
-                source_parent = source_parent.parent
+            # Check if folders are the same
+            if folder_a == folder_b:
+                self.logger.warning(f"sync_pairs[{i}]: Folders are identical, skipping")
+                continue
             
-            if not source_parent.exists():
-                self.logger.warning(f"Source drive/path not available: {source}")
-                self.logger.warning(f"Skipping sync pair: {sync_pair.get('source', 'unknown')} -> {sync_pair.get('target', 'unknown')}")
+            # Check if either folder's drive/path is available
+            def check_path_available(path: Path) -> bool:
+                parent = path
+                while parent.parent != parent and not parent.exists():
+                    parent = parent.parent
+                return parent.exists()
+            
+            if not check_path_available(folder_a) and not check_path_available(folder_b):
+                self.logger.warning(f"Both folders unavailable: {folder_a} and {folder_b}")
+                self.logger.warning(f"Skipping sync pair {i}")
                 # Mark as completed so we don't get stuck
                 completed_pairs.append(i)
                 self.progress['sync_pairs_completed'] = completed_pairs
                 self._save_progress()
                 continue
             
-            if source.exists():
+            # At least one folder exists, proceed with sync
+            if folder_a.exists() or folder_b.exists():
+                # Use the existing folder as base for chunking if it exists
+                base_folder = folder_a if folder_a.exists() else folder_b
+                
                 # Check if we should chunk this sync (large folders)
                 chunk_threshold = self.config.get('sync_chunk_subfolders', 30)
                 
-                if source.is_dir():
+                if base_folder.is_dir():
                     # Count immediate subfolders
                     try:
-                        subfolders = [d for d in source.iterdir() if d.is_dir() and not d.name.startswith('.')]
+                        subfolders = [d for d in base_folder.iterdir() if d.is_dir() and not d.name.startswith('.')]
                         num_subfolders = len(subfolders)
                         
                         if num_subfolders >= chunk_threshold:
@@ -2407,8 +2516,19 @@ class EnhancedFileOrganizer:
                                 try:
                                     if hasattr(self, 'running') and not self.running:
                                         return False
-                                    subfolder_target_local = target / subfolder_path.name
-                                    return self.folder_sync.sync_directories(subfolder_path, subfolder_target_local, sync_mode='bidirectional')
+                                    # Determine which folder this subfolder belongs to
+                                    try:
+                                        rel_path = subfolder_path.relative_to(folder_a)
+                                        other_subfolder = folder_b / rel_path
+                                    except ValueError:
+                                        # Not relative to folder_a, try folder_b
+                                        try:
+                                            rel_path = subfolder_path.relative_to(folder_b)
+                                            other_subfolder = folder_a / rel_path
+                                        except ValueError:
+                                            self.logger.error(f"Subfolder {subfolder_path} is not relative to either sync folder")
+                                            return False
+                                    return self.folder_sync.sync_directories(subfolder_path, other_subfolder, sync_mode='bidirectional')
                                 except Exception as e:
                                     self.logger.error(f"Chunk sync failed for {subfolder_path}: {e}")
                                     return False
@@ -2421,33 +2541,34 @@ class EnhancedFileOrganizer:
                                     completed += 1
                                     try:
                                         ok = future.result()
-                                        subfolder_source = str(sf)
-                                        subfolder_target = str(target / sf.name)
                                         if ok:
-                                            self.logger.info(f"{subfolder_source} → {subfolder_target}")
+                                            short_path = self.folder_sync._shorten_path(sf, [folder_a, folder_b])
+                                            self.logger.info(f"Synced subfolder: {short_path}")
                                         else:
-                                            self.logger.warning(f"{subfolder_source} → {subfolder_target} [FAILED]")
+                                            short_path = self.folder_sync._shorten_path(sf, [folder_a, folder_b])
+                                            self.logger.warning(f"Subfolder sync failed: {short_path}")
                                     except Exception as e:
-                                        subfolder_source = str(sf)
-                                        subfolder_target = str(target / sf.name)
-                                        self.logger.error(f"{subfolder_source} → {subfolder_target} [ERROR: {e}]")
+                                        short_path = self.folder_sync._shorten_path(sf, [folder_a, folder_b])
+                                        self.logger.error(f"Subfolder sync error: {short_path} - {e}")
                             
                             # Sync root level files (if any)
-                            root_files = [f for f in source.iterdir() if f.is_file()]
-                            if root_files:
-                                # Use bidirectional sync for root files
-                                root_sync_success = self.folder_sync.sync_directories(source, target, sync_mode='bidirectional')
+                            if base_folder.exists():
+                                root_files = [f for f in base_folder.iterdir() if f.is_file()]
+                                if root_files:
+                                    # Use bidirectional sync for root files
+                                    self.folder_sync.sync_directories(folder_a, folder_b, sync_mode='bidirectional')
                             
                             # Mark chunked sync as completed if all chunks succeeded
-                            # (We assume success if we got here without exceptions)
                             completed_pairs.append(i)
                             self.progress['sync_pairs_completed'] = completed_pairs
                             self.progress['current_step'] = 'sync'
                             self._save_progress()
                         else:
                             # Normal sync for smaller folders
-                            self.logger.info(f"Syncing: {source} → {target}")
-                            sync_success = self.folder_sync.sync_directories(source, target, sync_mode='bidirectional')
+                            short_a = self.folder_sync._shorten_path(folder_a, [folder_a, folder_b])
+                            short_b = self.folder_sync._shorten_path(folder_b, [folder_a, folder_b])
+                            self.logger.info(f"Syncing folders: {short_a} ↔ {short_b}")
+                            sync_success = self.folder_sync.sync_directories(folder_a, folder_b, sync_mode='bidirectional')
                             if sync_success:
                                 completed_pairs.append(i)
                                 self.progress['sync_pairs_completed'] = completed_pairs
@@ -2456,10 +2577,12 @@ class EnhancedFileOrganizer:
                             else:
                                 self.logger.warning(f"Sync failed for pair {i+1}, will retry on next run")
                     except Exception as e:
-                        self.logger.error(f"Error analyzing source folder {source}: {e}")
+                        self.logger.error(f"Error analyzing folder {base_folder}: {e}")
                         # Fall back to normal sync
-                        self.logger.info(f"Syncing: {source} → {target}")
-                        sync_success = self.folder_sync.sync_directories(source, target, sync_mode='bidirectional')
+                        short_a = self.folder_sync._shorten_path(folder_a, [folder_a, folder_b])
+                        short_b = self.folder_sync._shorten_path(folder_b, [folder_a, folder_b])
+                        self.logger.info(f"Syncing folders: {short_a} ↔ {short_b}")
+                        sync_success = self.folder_sync.sync_directories(folder_a, folder_b, sync_mode='bidirectional')
                         if sync_success:
                             completed_pairs.append(i)
                             self.progress['sync_pairs_completed'] = completed_pairs
@@ -2469,8 +2592,10 @@ class EnhancedFileOrganizer:
                             self.logger.warning(f"Sync failed for pair {i+1}, will retry on next run")
                 else:
                     # Not a directory, sync normally
-                    self.logger.info(f"Syncing: {source} → {target}")
-                    sync_success = self.folder_sync.sync_directories(source, target, sync_mode='bidirectional')
+                    short_a = self.folder_sync._shorten_path(folder_a, [folder_a, folder_b])
+                    short_b = self.folder_sync._shorten_path(folder_b, [folder_a, folder_b])
+                    self.logger.info(f"Syncing folders: {short_a} ↔ {short_b}")
+                    sync_success = self.folder_sync.sync_directories(folder_a, folder_b, sync_mode='bidirectional')
                     if sync_success:
                         completed_pairs.append(i)
                         self.progress['sync_pairs_completed'] = completed_pairs
@@ -2479,9 +2604,9 @@ class EnhancedFileOrganizer:
                     else:
                         self.logger.warning(f"Sync failed for pair {i+1}, will retry on next run")
             else:
-                self.logger.warning(f"Source folder does not exist: {source}")
-                # Don't mark as completed if source doesn't exist - we want to retry
-                self.logger.info(f"Will retry sync pair {i+1} on next run when source becomes available")
+                self.logger.warning(f"Neither folder exists: {folder_a} or {folder_b}")
+                # Don't mark as completed if folders don't exist - we want to retry
+                self.logger.info(f"Will retry sync pair {i+1} on next run when folders become available")
     
     def remove_duplicates_across_system(self) -> None:
         """Find and remove duplicates across all source folders."""
