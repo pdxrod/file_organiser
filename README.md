@@ -15,7 +15,7 @@
 
 ## 🖥️ Desktop App (Recommended)
 
-**The easiest way to use File Organizer is with the desktop app!**
+**The easiest way to use File Organizer is with the desktop app**
 
 ### Launch the Desktop App
 ```bash
@@ -45,7 +45,6 @@ The desktop app gives you a friendly interface to:
 - **Files affected:** Only files in `test/` directory (never touches your real files)
 - **Output:** Creates `test/organized/` with organized sample files
 - **When to use:** Learning how the organizer works, testing new configurations
-- **Safety:** Completely safe - your real files are never touched
 
 ### 🏭 Real Background Daemon
 **What it does:** Full production organization that runs continuously in the background

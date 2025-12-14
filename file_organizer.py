@@ -1811,17 +1811,50 @@ class EnhancedFileOrganizer:
         
         # Resolve drive placeholders in sync_pairs
         if 'sync_pairs' in self.config:
-            for pair in self.config['sync_pairs']:
+            for i, pair in enumerate(self.config['sync_pairs']):
                 if 'folders' in pair:
                     # New format: resolve each folder in the list
                     if isinstance(pair['folders'], list):
-                        pair['folders'] = [self._resolve_path_with_drives(folder, drives) for folder in pair['folders']]
+                        resolved_folders = []
+                        for folder in pair['folders']:
+                            resolved = self._resolve_path_with_drives(folder, drives)
+                            # Validate that resolved path is absolute and doesn't contain unresolved placeholders
+                            if not resolved.startswith('/') and not resolved.startswith('~'):
+                                # Check if it still contains a drive placeholder
+                                first_part = resolved.split('/')[0]
+                                if (first_part.isupper() and ('_' in first_part or first_part.endswith('_DRIVE'))) or \
+                                   first_part in ['MAIN_DRIVE', 'EXTERNAL_DRIVE', 'GOOGLE_DRIVE', 'PROTON_DRIVE', 'BACKUP_DRIVE']:
+                                    if first_part not in drives:
+                                        self.logger.error(f"CRITICAL: Failed to resolve drive placeholder '{first_part}' in sync_pairs[{i}]")
+                                        self.logger.error(f"Original path: '{folder}', Resolved to: '{resolved}'")
+                                        self.logger.error(f"Available drives: {list(drives.keys())}")
+                                        raise ValueError(f"Failed to resolve drive placeholder '{first_part}' in path '{folder}'. "
+                                                       f"Resolved to '{resolved}' which still contains unresolved placeholder. "
+                                                       f"Please check your drives configuration.")
+                            resolved_folders.append(resolved)
+                        pair['folders'] = resolved_folders
                 else:
                     # Old format (backward compatibility)
                     if 'source' in pair:
-                        pair['source'] = self._resolve_path_with_drives(pair['source'], drives)
+                        resolved = self._resolve_path_with_drives(pair['source'], drives)
+                        # Validate resolved path
+                        if not resolved.startswith('/') and not resolved.startswith('~'):
+                            first_part = resolved.split('/')[0]
+                            if (first_part.isupper() and ('_' in first_part or first_part.endswith('_DRIVE'))) or \
+                               first_part in ['MAIN_DRIVE', 'EXTERNAL_DRIVE', 'GOOGLE_DRIVE', 'PROTON_DRIVE', 'BACKUP_DRIVE']:
+                                if first_part not in drives:
+                                    raise ValueError(f"Failed to resolve drive placeholder '{first_part}' in source path '{pair['source']}'")
+                        pair['source'] = resolved
                     if 'target' in pair:
-                        pair['target'] = self._resolve_path_with_drives(pair['target'], drives)
+                        resolved = self._resolve_path_with_drives(pair['target'], drives)
+                        # Validate resolved path
+                        if not resolved.startswith('/') and not resolved.startswith('~'):
+                            first_part = resolved.split('/')[0]
+                            if (first_part.isupper() and ('_' in first_part or first_part.endswith('_DRIVE'))) or \
+                               first_part in ['MAIN_DRIVE', 'EXTERNAL_DRIVE', 'GOOGLE_DRIVE', 'PROTON_DRIVE', 'BACKUP_DRIVE']:
+                                if first_part not in drives:
+                                    raise ValueError(f"Failed to resolve drive placeholder '{first_part}' in target path '{pair['target']}'")
+                        pair['target'] = resolved
     
     def _resolve_path(self, path: str) -> str:
         """Resolve a path containing drive placeholders (uses resolved drives)."""
@@ -2521,6 +2554,35 @@ class EnhancedFileOrganizer:
                 continue
             
             # Paths should already be resolved from drive placeholders, just expand ~ and resolve
+            # BUT: Validate that they don't contain unresolved drive placeholders first
+            if isinstance(folder_a_path, str):
+                # Check if path contains unresolved drive placeholder
+                if not folder_a_path.startswith('/') and not folder_a_path.startswith('.') and not folder_a_path.startswith('~'):
+                    first_part = folder_a_path.split('/')[0]
+                    if (first_part.isupper() and ('_' in first_part or first_part.endswith('_DRIVE'))) or \
+                       first_part in ['MAIN_DRIVE', 'EXTERNAL_DRIVE', 'GOOGLE_DRIVE', 'PROTON_DRIVE', 'BACKUP_DRIVE']:
+                        drives = self.config.get('drives', {})
+                        if first_part not in drives:
+                            self.logger.error(f"CRITICAL: Unresolved drive placeholder '{first_part}' in sync path '{folder_a_path}'")
+                            self.logger.error(f"Available drives: {list(drives.keys())}")
+                            raise ValueError(f"Unresolved drive placeholder '{first_part}' in sync path '{folder_a_path}'. "
+                                           f"This would create a literal '{first_part}' directory. "
+                                           f"Please ensure '{first_part}' is defined in the 'drives' section of your config file.")
+            
+            if isinstance(folder_b_path, str):
+                # Check if path contains unresolved drive placeholder
+                if not folder_b_path.startswith('/') and not folder_b_path.startswith('.') and not folder_b_path.startswith('~'):
+                    first_part = folder_b_path.split('/')[0]
+                    if (first_part.isupper() and ('_' in first_part or first_part.endswith('_DRIVE'))) or \
+                       first_part in ['MAIN_DRIVE', 'EXTERNAL_DRIVE', 'GOOGLE_DRIVE', 'PROTON_DRIVE', 'BACKUP_DRIVE']:
+                        drives = self.config.get('drives', {})
+                        if first_part not in drives:
+                            self.logger.error(f"CRITICAL: Unresolved drive placeholder '{first_part}' in sync path '{folder_b_path}'")
+                            self.logger.error(f"Available drives: {list(drives.keys())}")
+                            raise ValueError(f"Unresolved drive placeholder '{first_part}' in sync path '{folder_b_path}'. "
+                                           f"This would create a literal '{first_part}' directory. "
+                                           f"Please ensure '{first_part}' is defined in the 'drives' section of your config file.")
+            
             folder_a = Path(folder_a_path).expanduser().resolve()
             folder_b = Path(folder_b_path).expanduser().resolve()
             
