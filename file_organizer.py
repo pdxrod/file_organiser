@@ -586,34 +586,62 @@ class FolderSynchronizer:
         self.logger = logger
         self.git_manager = git_manager
     
-    def _shorten_path(self, path: Path, base_paths: List[Path]) -> str:
+    def _shorten_path(self, path: Path, base_paths: List[Path] = None, include_filename: bool = True) -> str:
         """
-        Shorten a path for display by showing only the last few components.
-        If path is under one of base_paths, show relative path from there.
-        Otherwise, show last 3 components.
+        Shorten a path for compact display.
+        Shows: Users/.../subdir/filename or Volumes/Drive/.../subdir/filename
+        Just enough start to identify the drive, then relevant subdirectory (and optionally filename).
+        Removes leading slash for cleaner output.
         """
         path_str = str(path)
         
-        # Try to find if path is under any base path
-        for base in base_paths:
-            try:
-                rel = path.relative_to(base)
-                # If relative path has more than 3 components, show last 3
-                parts = rel.parts
-                if len(parts) > 3:
-                    return f"{base.name}/.../{'/'.join(parts[-3:])}"
-                else:
-                    return f"{base.name}/{str(rel)}"
-            except ValueError:
-                # Not under this base path
-                continue
+        # If path is short enough, return as-is (without leading slash)
+        if len(path_str) <= 50:
+            return path_str.lstrip('/')
         
-        # Not under any base path, show last 3 components
         parts = path.parts
-        if len(parts) > 3:
-            return f".../{'/'.join(parts[-3:])}"
-        else:
-            return str(path)
+        if len(parts) == 0:
+            return path_str.lstrip('/')
+        
+        # Determine how much of the start to show (skip root slash)
+        # For /Users paths: show Users/ (1 part after root)
+        # For /Volumes paths: show Volumes/DriveName/ (2 parts after root to identify drive)
+        start_parts = []
+        
+        if parts[0] == '/Volumes' and len(parts) >= 3:
+            # For external drives, show Volumes/DriveName to identify which drive
+            start_parts.extend(parts[1:3])  # Skip root, include Volumes and drive name
+        elif parts[0] == '/' and len(parts) >= 2:
+            # For /Users or other root paths, show first part after root
+            start_parts.append(parts[1])
+        
+        # Get the last 2-3 parts (subdirectory and optionally filename)
+        # This shows the relevant context around the file
+        end_parts = []
+        if include_filename and len(parts) >= 1:
+            end_parts.append(parts[-1])  # filename
+        if len(parts) >= 2:
+            end_parts.insert(0, parts[-2])  # parent dir
+        if len(parts) >= 3 and len(end_parts) < 3:
+            # If we have room, include grandparent for more context
+            end_parts.insert(0, parts[-3])
+        
+        # Build shortened path
+        start_str = '/'.join(start_parts)
+        end_str = '/'.join(end_parts)
+        
+        # Check if start and end overlap
+        total_start_end_parts = len(start_parts) + len(end_parts)
+        if total_start_end_parts >= len(parts):
+            # Overlap - just show start + ... + (filename or last part)
+            if include_filename and len(parts) >= 1:
+                return f"{start_str}/.../{parts[-1]}"
+            elif len(parts) >= 2:
+                return f"{start_str}/.../{parts[-2]}/"
+            else:
+                return start_str
+        
+        return f"{start_str}/.../{end_str}"
     
     def _get_file_hash(self, file_path: Path, chunk_size: int = 8192) -> str:
         """Get hash of file content."""
@@ -935,11 +963,11 @@ class FolderSynchronizer:
                             self.logger.debug(f"Copied symlink: {file_b} -> {dest_file}")
                         else:
                             shutil.copy2(file_b, dest_file)
-                            # Use shortened paths for output
-                            short_src = self._shorten_path(file_b, base_paths)
-                            short_dest = self._shorten_path(dest_file, base_paths)
-                            filename = relative_path.name
-                            self.logger.info(f"Copying {filename} from {short_src} to {short_dest}")
+                            # Use shortened paths for compact output
+                            # Source includes filename, destination shows directory only
+                            short_src = self._shorten_path(file_b, base_paths, include_filename=True)
+                            short_dest = self._shorten_path(dest_file, base_paths, include_filename=False)
+                            self.logger.info(f"Copying {short_src} → {short_dest}")
                         copied_b_to_a += 1
                     except Exception as e:
                         self.logger.error(f"Failed to copy {file_b} to {dest_file}: {e}")
@@ -956,18 +984,18 @@ class FolderSynchronizer:
                             self.logger.debug(f"Copied symlink: {file_a} -> {dest_file}")
                         else:
                             shutil.copy2(file_a, dest_file)
-                            # Use shortened paths for output
-                            short_src = self._shorten_path(file_a, base_paths)
-                            short_dest = self._shorten_path(dest_file, base_paths)
-                            filename = relative_path.name
-                            self.logger.info(f"Copying {filename} from {short_src} to {short_dest}")
+                            # Use shortened paths for compact output
+                            # Source includes filename, destination shows directory only
+                            short_src = self._shorten_path(file_a, base_paths, include_filename=True)
+                            short_dest = self._shorten_path(dest_file, base_paths, include_filename=False)
+                            self.logger.info(f"Copying {short_src} → {short_dest}")
                         copied_a_to_b += 1
                     except Exception as e:
                         self.logger.error(f"Failed to copy {file_a} to {dest_file}: {e}")
             
             if copied_a_to_b > 0 or copied_b_to_a > 0:
-                short_a = self._shorten_path(folder_a, base_paths)
-                short_b = self._shorten_path(folder_b, base_paths)
+                short_a = self._shorten_path(folder_a, base_paths, include_filename=False)
+                short_b = self._shorten_path(folder_b, base_paths, include_filename=False)
                 self.logger.info(f"Sync complete: {copied_a_to_b} files A→B, {copied_b_to_a} files B→A ({short_a} ↔ {short_b})")
             return True
             
@@ -1563,6 +1591,29 @@ class EnhancedFileOrganizer:
                 resolved = self._resolve_path_with_drives(resolved, drives, max_depth - 1)
                 # Expand ~ if present
                 return str(Path(resolved).expanduser())
+        
+        # No drive placeholder found - check if path looks like it contains an unresolved drive placeholder
+        # Drive placeholders are typically ALL_CAPS_WITH_UNDERSCORES
+        path_parts = path.split('/')
+        if path_parts and path_parts[0]:
+            first_part = path_parts[0]
+            # Check if first part looks like a drive placeholder (all caps, contains underscore, or common drive patterns)
+            # Only check if it's not already an absolute path (starts with /) and not a relative path starting with . or ~
+            if not path.startswith('/') and not path.startswith('.') and not path.startswith('~'):
+                if (first_part.isupper() and ('_' in first_part or first_part.endswith('_DRIVE'))) or \
+                   first_part in ['MAIN_DRIVE', 'EXTERNAL_DRIVE', 'GOOGLE_DRIVE', 'PROTON_DRIVE', 'BACKUP_DRIVE']:
+                    # This looks like an unresolved drive placeholder!
+                    # Only raise error if we're in production mode and drives dict is not empty
+                    # (if drives dict is empty, maybe drives are optional, so just warn)
+                    if drives and not self.test_mode:
+                        self.logger.error(f"Unresolved drive placeholder detected: '{first_part}' in path '{path}'")
+                        self.logger.error(f"Available drives: {list(drives.keys())}")
+                        self.logger.error(f"This path will be treated as a relative path, which may cause incorrect behavior.")
+                        raise ValueError(f"Unresolved drive placeholder '{first_part}' in path '{path}'. "
+                                       f"Please ensure '{first_part}' is defined in the 'drives' section of your config file.")
+                    elif drives:
+                        # In test mode, just warn
+                        self.logger.warning(f"Unresolved drive placeholder '{first_part}' in path '{path}' - treating as relative path")
         
         # No drive placeholder found, just expand ~
         return str(Path(path).expanduser())
