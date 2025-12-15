@@ -705,11 +705,35 @@ class FolderSynchronizer:
         return removed_count
     
     def should_exclude_from_sync(self, path: Path, sync_excludes: List[str]) -> bool:
-        """Check if path should be excluded from sync."""
+        """Check if path should be excluded from sync.
+        
+        Supports wildcard patterns (e.g., '.tmp*', '*.pyc') and simple substring matching.
+        Checks both the full path and individual path components (directory/file names).
+        """
+        import fnmatch
+        
         path_str = str(path)
+        path_parts = path.parts
+        
         for exclude in sync_excludes:
-            if exclude in path_str:
-                return True
+            # Check if pattern contains wildcards
+            if '*' in exclude or '?' in exclude:
+                # Use fnmatch for wildcard patterns
+                # Check individual path components (directory/file names) - most common case
+                # e.g., '.tmp*' should match '.tmp.driveupload' directory name
+                for part in path_parts:
+                    if fnmatch.fnmatch(part, exclude):
+                        return True
+                # Also check if pattern matches anywhere in the full path
+                # This handles cases like '*node_modules*'
+                if fnmatch.fnmatch(path_str, f"*{exclude}*"):
+                    return True
+            else:
+                # Simple substring match for patterns without wildcards
+                # Check if pattern appears anywhere in the path
+                if exclude in path_str:
+                    return True
+        
         return False
     
     def sync_with_rsync(self, source: Path, target: Path, sync_mode: str, sync_excludes: List[str]) -> bool:
@@ -828,6 +852,20 @@ class FolderSynchronizer:
                 self.logger.warning(f"Skipping sync - drive at {target_parent} not found")
                 return False
             
+            # CRITICAL: Check if target path contains "MAIN_DRIVE" as a literal directory name
+            # This prevents creating literal MAIN_DRIVE directories
+            target_str = str(target)
+            if 'MAIN_DRIVE' in target_str:
+                # Check if MAIN_DRIVE appears as a directory component (not just in a filename)
+                target_parts = target.parts
+                if 'MAIN_DRIVE' in target_parts:
+                    # This is a bug - MAIN_DRIVE should have been resolved
+                    error_msg = (f"CRITICAL BUG DETECTED: Target path contains literal 'MAIN_DRIVE' directory: {target}. "
+                               f"This will create a literal MAIN_DRIVE folder. Path parts: {target_parts}. "
+                               f"Please check your drives configuration.")
+                    self.logger.error(error_msg)
+                    raise ValueError(error_msg)
+            
             # Test write access by actually trying to create a test file
             # This is more reliable than os.access() on macOS external drives
             try:
@@ -860,6 +898,18 @@ class FolderSynchronizer:
         except Exception as e:
             self.logger.warning(f"Cannot access target drive for {target}: {e}")
             return False
+        
+        # CRITICAL: Check if target path contains "MAIN_DRIVE" as a literal directory name
+        target_str = str(target)
+        if 'MAIN_DRIVE' in target_str:
+            target_parts = target.parts
+            if 'MAIN_DRIVE' in target_parts:
+                # This is a bug - MAIN_DRIVE should have been resolved
+                error_msg = (f"CRITICAL BUG DETECTED: Target path contains literal 'MAIN_DRIVE' directory: {target}. "
+                           f"This will create a literal MAIN_DRIVE folder. Path parts: {target_parts}. "
+                           f"Please check your drives configuration.")
+                self.logger.error(error_msg)
+                raise ValueError(error_msg)
         
         # Create target directory
         try:
@@ -953,6 +1003,12 @@ class FolderSynchronizer:
                 if copy_from_b:
                     # Copy from B to A
                     dest_file = folder_a / relative_path
+                    # CRITICAL: Check for MAIN_DRIVE in path before creating directory
+                    if 'MAIN_DRIVE' in dest_file.parts:
+                        error_msg = (f"CRITICAL BUG: Attempting to create directory with MAIN_DRIVE: {dest_file}. "
+                                   f"Path parts: {dest_file.parts}")
+                        self.logger.error(error_msg)
+                        raise ValueError(error_msg)
                     dest_file.parent.mkdir(parents=True, exist_ok=True)
                     try:
                         if file_b.is_symlink():
@@ -967,13 +1023,19 @@ class FolderSynchronizer:
                             # Source includes filename, destination shows directory only
                             short_src = self._shorten_path(file_b, base_paths, include_filename=True)
                             short_dest = self._shorten_path(dest_file, base_paths, include_filename=False)
-                            self.logger.info(f"Copying {short_src} → {short_dest}")
+                            self.logger.info(f"{short_src} → {short_dest}")
                         copied_b_to_a += 1
                     except Exception as e:
                         self.logger.error(f"Failed to copy {file_b} to {dest_file}: {e}")
                 else:
                     # Copy from A to B
                     dest_file = folder_b / relative_path
+                    # CRITICAL: Check for MAIN_DRIVE in path before creating directory
+                    if 'MAIN_DRIVE' in dest_file.parts:
+                        error_msg = (f"CRITICAL BUG: Attempting to create directory with MAIN_DRIVE: {dest_file}. "
+                                   f"Path parts: {dest_file.parts}")
+                        self.logger.error(error_msg)
+                        raise ValueError(error_msg)
                     dest_file.parent.mkdir(parents=True, exist_ok=True)
                     try:
                         if file_a.is_symlink():
@@ -988,7 +1050,7 @@ class FolderSynchronizer:
                             # Source includes filename, destination shows directory only
                             short_src = self._shorten_path(file_a, base_paths, include_filename=True)
                             short_dest = self._shorten_path(dest_file, base_paths, include_filename=False)
-                            self.logger.info(f"Copying {short_src} → {short_dest}")
+                            self.logger.info(f"{short_src} → {short_dest}")
                         copied_a_to_b += 1
                     except Exception as e:
                         self.logger.error(f"Failed to copy {file_a} to {dest_file}: {e}")
@@ -1014,6 +1076,13 @@ class FolderSynchronizer:
                 if source_item.is_file():
                     relative_path = source_item.relative_to(source)
                     target_item = target / relative_path
+                    
+                    # CRITICAL: Check for MAIN_DRIVE in path before creating directory
+                    if 'MAIN_DRIVE' in target_item.parts:
+                        error_msg = (f"CRITICAL BUG: Attempting to create directory with MAIN_DRIVE: {target_item}. "
+                                   f"Path parts: {target_item.parts}")
+                        self.logger.error(error_msg)
+                        raise ValueError(error_msg)
                     
                     # Create parent directories
                     target_item.parent.mkdir(parents=True, exist_ok=True)
@@ -1139,6 +1208,13 @@ class BackgroundBackup:
                     # If not under home or cwd, use a backup folder
                     target_path = self.backup_drive_path / 'backup' / source_path.name
             
+            # CRITICAL: Check for MAIN_DRIVE in backup target path
+            if 'MAIN_DRIVE' in target_path.parts:
+                error_msg = (f"CRITICAL BUG: Backup target path contains MAIN_DRIVE: {target_path}. "
+                           f"Source: {source_path}, Path parts: {target_path.parts}")
+                self.logger.error(error_msg)
+                raise ValueError(error_msg)
+            
             if source_path.is_file():
                 target_path.parent.mkdir(parents=True, exist_ok=True)
                 self.copy_with_symlink_preservation(source_path, target_path)
@@ -1147,6 +1223,12 @@ class BackgroundBackup:
                     if item.is_file():
                         rel_item = item.relative_to(source_path)
                         target_item = target_path / rel_item
+                        # CRITICAL: Check for MAIN_DRIVE in backup target path
+                        if 'MAIN_DRIVE' in target_item.parts:
+                            error_msg = (f"CRITICAL BUG: Backup target path contains MAIN_DRIVE: {target_item}. "
+                                       f"Source: {item}, Path parts: {target_item.parts}")
+                            self.logger.error(error_msg)
+                            raise ValueError(error_msg)
                         target_item.parent.mkdir(parents=True, exist_ok=True)
                         self.copy_with_symlink_preservation(item, target_item)
             
@@ -1212,6 +1294,27 @@ class EnhancedFileOrganizer:
         self.config = self._load_config()
         self.running = True  # Always set to True initially (even for --scan-once)
         self.logger = self._setup_logging()
+        
+        # CRITICAL: Check if MAIN_DRIVE directory exists in current working directory (indicates previous bug)
+        cwd = Path.cwd()
+        main_drive_dir = cwd / 'MAIN_DRIVE'
+        if main_drive_dir.exists() and main_drive_dir.is_dir():
+            error_msg = (f"CRITICAL: Found incorrectly created 'MAIN_DRIVE' directory at: {main_drive_dir}\n"
+                        f"This indicates a previous bug where drive placeholders were not properly resolved.\n"
+                        f"You MUST delete this directory before running the organizer again, or it will cause data corruption.\n"
+                        f"To fix:\n"
+                        f"  1. Stop the file organizer\n"
+                        f"  2. Review the contents of {main_drive_dir} to see what was incorrectly copied\n"
+                        f"  3. Delete the directory: rm -rf {main_drive_dir}\n"
+                        f"  4. Check your organizer_config.json to ensure all drive placeholders are properly resolved")
+            self.logger.error(error_msg)
+            if not test_mode:
+                print("\n" + "=" * 70)
+                print("CRITICAL ERROR: Incorrectly created MAIN_DRIVE directory detected!")
+                print("=" * 70)
+                print(error_msg)
+                print("=" * 70 + "\n")
+                raise ValueError("MAIN_DRIVE directory exists - this indicates a configuration error. Please fix before continuing.")
         
         # PRODUCTION MODE: Strict validation (exit on any issues)
         if not test_mode:
@@ -1572,47 +1675,74 @@ class EnhancedFileOrganizer:
         """
         Recursively resolve a path containing drive placeholders.
         Handles nested drive references like PROTON_DRIVE: "MAIN_DRIVE/ProtonDrive"
+        
+        Simple approach: Replace drive names with their values until no more replacements occur.
         """
         if max_depth <= 0:
             # Prevent infinite recursion
             self.logger.warning(f"Max recursion depth reached resolving path: {path}")
             return str(Path(path).expanduser())
         
-        # Check if path starts with a drive name
+        # If path is already absolute and doesn't contain any drive placeholders, return it
+        if path.startswith('/') or path.startswith('~'):
+            # Check if it still contains any drive placeholders (shouldn't happen, but be safe)
+            for drive_name in drives.keys():
+                if drive_name.startswith('comment'):
+                    continue
+                if drive_name in path:
+                    # Still has a drive placeholder in an absolute path - this is an error
+                    error_msg = (f"CRITICAL BUG: Absolute path '{path}' still contains drive placeholder '{drive_name}'. "
+                               f"This should not happen after resolution.")
+                    self.logger.error(error_msg)
+                    raise ValueError(error_msg)
+            return str(Path(path).expanduser())
+        
+        # Path is relative - check if it starts with a drive name
+        original_path = path
         for drive_name, drive_path in drives.items():
             # Skip comment keys
             if drive_name.startswith('comment'):
                 continue
+            
             # Check if path starts with drive name followed by '/' or is exactly the drive name
             if path.startswith(drive_name + '/') or path == drive_name:
-                # Replace the drive name with its path
-                resolved = path.replace(drive_name, drive_path, 1)
+                # Replace the drive name with its path (only the first occurrence)
+                if path == drive_name:
+                    # Exact match - replace entire path
+                    resolved = drive_path
+                else:
+                    # Path starts with drive_name/ - replace drive_name with drive_path
+                    resolved = drive_path + path[len(drive_name):]
+                
                 # Recursively resolve any remaining drive placeholders in the resolved path
                 resolved = self._resolve_path_with_drives(resolved, drives, max_depth - 1)
-                # Expand ~ if present
+                # Expand ~ if present and return
                 return str(Path(resolved).expanduser())
         
-        # No drive placeholder found - check if path looks like it contains an unresolved drive placeholder
-        # Drive placeholders are typically ALL_CAPS_WITH_UNDERSCORES
+        # No drive placeholder found at the start - check if path looks like it contains an unresolved drive placeholder
         path_parts = path.split('/')
         if path_parts and path_parts[0]:
             first_part = path_parts[0]
-            # Check if first part looks like a drive placeholder (all caps, contains underscore, or common drive patterns)
-            # Only check if it's not already an absolute path (starts with /) and not a relative path starting with . or ~
+            # Check if first part looks like a drive placeholder
             if not path.startswith('/') and not path.startswith('.') and not path.startswith('~'):
                 if (first_part.isupper() and ('_' in first_part or first_part.endswith('_DRIVE'))) or \
                    first_part in ['MAIN_DRIVE', 'EXTERNAL_DRIVE', 'GOOGLE_DRIVE', 'PROTON_DRIVE', 'BACKUP_DRIVE']:
                     # This looks like an unresolved drive placeholder!
-                    # Only raise error if we're in production mode and drives dict is not empty
-                    # (if drives dict is empty, maybe drives are optional, so just warn)
-                    if drives and not self.test_mode:
-                        self.logger.error(f"Unresolved drive placeholder detected: '{first_part}' in path '{path}'")
-                        self.logger.error(f"Available drives: {list(drives.keys())}")
-                        self.logger.error(f"This path will be treated as a relative path, which may cause incorrect behavior.")
-                        raise ValueError(f"Unresolved drive placeholder '{first_part}' in path '{path}'. "
-                                       f"Please ensure '{first_part}' is defined in the 'drives' section of your config file.")
-                    elif drives:
-                        # In test mode, just warn
+                    if not self.test_mode:
+                        if drives:
+                            if first_part not in drives:
+                                error_msg = (f"CRITICAL BUG: Unresolved drive placeholder '{first_part}' in path '{path}'. "
+                                           f"Available drives: {list(drives.keys())}. "
+                                           f"This will create a literal '{first_part}' directory. "
+                                           f"Please ensure '{first_part}' is defined in the 'drives' section.")
+                                self.logger.error(error_msg)
+                                raise ValueError(error_msg)
+                        else:
+                            error_msg = (f"CRITICAL BUG: Path '{path}' contains drive placeholder '{first_part}' but no 'drives' section found. "
+                                       f"This will create a literal '{first_part}' directory.")
+                            self.logger.error(error_msg)
+                            raise ValueError(error_msg)
+                    elif drives and first_part not in drives:
                         self.logger.warning(f"Unresolved drive placeholder '{first_part}' in path '{path}' - treating as relative path")
         
         # No drive placeholder found, just expand ~
@@ -1810,50 +1940,73 @@ class EnhancedFileOrganizer:
             self._resolve_placeholder_value('backup_drive_path')
         
         # Resolve drive placeholders in sync_pairs
+        # This is CRITICAL - all drive placeholders MUST be replaced with actual paths here
         if 'sync_pairs' in self.config:
+            self.logger.info(f"Resolving drive placeholders in {len(self.config['sync_pairs'])} sync pairs...")
             for i, pair in enumerate(self.config['sync_pairs']):
                 if 'folders' in pair:
                     # New format: resolve each folder in the list
                     if isinstance(pair['folders'], list):
                         resolved_folders = []
                         for folder in pair['folders']:
+                            self.logger.debug(f"Resolving path '{folder}' in sync_pairs[{i}]")
                             resolved = self._resolve_path_with_drives(folder, drives)
-                            # Validate that resolved path is absolute and doesn't contain unresolved placeholders
+                            self.logger.debug(f"  Resolved to: '{resolved}'")
+                            
+                            # CRITICAL: Validate that resolution actually worked
+                            # The resolved path MUST be absolute and MUST NOT contain any drive placeholder strings
                             if not resolved.startswith('/') and not resolved.startswith('~'):
-                                # Check if it still contains a drive placeholder
-                                first_part = resolved.split('/')[0]
+                                first_part = resolved.split('/')[0] if '/' in resolved else resolved
                                 if (first_part.isupper() and ('_' in first_part or first_part.endswith('_DRIVE'))) or \
                                    first_part in ['MAIN_DRIVE', 'EXTERNAL_DRIVE', 'GOOGLE_DRIVE', 'PROTON_DRIVE', 'BACKUP_DRIVE']:
                                     if first_part not in drives:
-                                        self.logger.error(f"CRITICAL: Failed to resolve drive placeholder '{first_part}' in sync_pairs[{i}]")
-                                        self.logger.error(f"Original path: '{folder}', Resolved to: '{resolved}'")
-                                        self.logger.error(f"Available drives: {list(drives.keys())}")
-                                        raise ValueError(f"Failed to resolve drive placeholder '{first_part}' in path '{folder}'. "
-                                                       f"Resolved to '{resolved}' which still contains unresolved placeholder. "
-                                                       f"Please check your drives configuration.")
+                                        error_msg = (f"CRITICAL BUG: Path resolution failed for '{folder}' in sync_pairs[{i}]. "
+                                                   f"Resolved to '{resolved}' which still contains unresolved drive placeholder '{first_part}'. "
+                                                   f"Available drives: {list(drives.keys())}. "
+                                                   f"This will create a literal '{first_part}' directory. "
+                                                   f"Please check your drives configuration.")
+                                        self.logger.error(error_msg)
+                                        raise ValueError(error_msg)
+                            
+                            # Additional check: resolved path must not contain "MAIN_DRIVE" anywhere
+                            if 'MAIN_DRIVE' in resolved:
+                                error_msg = (f"CRITICAL BUG: Resolved path '{resolved}' still contains 'MAIN_DRIVE' string. "
+                                           f"Original path: '{folder}'. This indicates resolution failed.")
+                                self.logger.error(error_msg)
+                                raise ValueError(error_msg)
+                            
                             resolved_folders.append(resolved)
                         pair['folders'] = resolved_folders
+                        self.logger.debug(f"sync_pairs[{i}] resolved: {pair['folders']}")
                 else:
                     # Old format (backward compatibility)
                     if 'source' in pair:
                         resolved = self._resolve_path_with_drives(pair['source'], drives)
-                        # Validate resolved path
+                        # Validate resolution
                         if not resolved.startswith('/') and not resolved.startswith('~'):
-                            first_part = resolved.split('/')[0]
+                            first_part = resolved.split('/')[0] if '/' in resolved else resolved
                             if (first_part.isupper() and ('_' in first_part or first_part.endswith('_DRIVE'))) or \
                                first_part in ['MAIN_DRIVE', 'EXTERNAL_DRIVE', 'GOOGLE_DRIVE', 'PROTON_DRIVE', 'BACKUP_DRIVE']:
                                 if first_part not in drives:
-                                    raise ValueError(f"Failed to resolve drive placeholder '{first_part}' in source path '{pair['source']}'")
+                                    error_msg = (f"CRITICAL BUG: Path resolution failed for source '{pair['source']}'. "
+                                               f"Resolved to '{resolved}' which still contains unresolved drive placeholder '{first_part}'. "
+                                               f"This will create a literal '{first_part}' directory.")
+                                    self.logger.error(error_msg)
+                                    raise ValueError(error_msg)
                         pair['source'] = resolved
                     if 'target' in pair:
                         resolved = self._resolve_path_with_drives(pair['target'], drives)
-                        # Validate resolved path
+                        # Validate resolution
                         if not resolved.startswith('/') and not resolved.startswith('~'):
-                            first_part = resolved.split('/')[0]
+                            first_part = resolved.split('/')[0] if '/' in resolved else resolved
                             if (first_part.isupper() and ('_' in first_part or first_part.endswith('_DRIVE'))) or \
                                first_part in ['MAIN_DRIVE', 'EXTERNAL_DRIVE', 'GOOGLE_DRIVE', 'PROTON_DRIVE', 'BACKUP_DRIVE']:
                                 if first_part not in drives:
-                                    raise ValueError(f"Failed to resolve drive placeholder '{first_part}' in target path '{pair['target']}'")
+                                    error_msg = (f"CRITICAL BUG: Path resolution failed for target '{pair['target']}'. "
+                                               f"Resolved to '{resolved}' which still contains unresolved drive placeholder '{first_part}'. "
+                                               f"This will create a literal '{first_part}' directory.")
+                                    self.logger.error(error_msg)
+                                    raise ValueError(error_msg)
                         pair['target'] = resolved
     
     def _resolve_path(self, path: str) -> str:
@@ -2554,37 +2707,72 @@ class EnhancedFileOrganizer:
                 continue
             
             # Paths should already be resolved from drive placeholders, just expand ~ and resolve
-            # BUT: Validate that they don't contain unresolved drive placeholders first
+            # CRITICAL: Validate that paths don't contain unresolved drive placeholders before creating Path objects
+            # This prevents creating literal "MAIN_DRIVE" directories
             if isinstance(folder_a_path, str):
-                # Check if path contains unresolved drive placeholder
-                if not folder_a_path.startswith('/') and not folder_a_path.startswith('.') and not folder_a_path.startswith('~'):
+                # Check if path is relative and contains what looks like a drive placeholder
+                if not folder_a_path.startswith('/') and not folder_a_path.startswith('~'):
                     first_part = folder_a_path.split('/')[0]
+                    # Check if it looks like a drive placeholder
                     if (first_part.isupper() and ('_' in first_part or first_part.endswith('_DRIVE'))) or \
                        first_part in ['MAIN_DRIVE', 'EXTERNAL_DRIVE', 'GOOGLE_DRIVE', 'PROTON_DRIVE', 'BACKUP_DRIVE']:
                         drives = self.config.get('drives', {})
                         if first_part not in drives:
-                            self.logger.error(f"CRITICAL: Unresolved drive placeholder '{first_part}' in sync path '{folder_a_path}'")
-                            self.logger.error(f"Available drives: {list(drives.keys())}")
-                            raise ValueError(f"Unresolved drive placeholder '{first_part}' in sync path '{folder_a_path}'. "
-                                           f"This would create a literal '{first_part}' directory. "
-                                           f"Please ensure '{first_part}' is defined in the 'drives' section of your config file.")
+                            error_msg = (f"CRITICAL BUG: Unresolved drive placeholder '{first_part}' detected in sync path '{folder_a_path}'. "
+                                       f"This would create a literal '{first_part}' directory at the current working directory. "
+                                       f"Available drives: {list(drives.keys())}. "
+                                       f"Please ensure '{first_part}' is properly defined in the 'drives' section of your config file.")
+                            self.logger.error(error_msg)
+                            raise ValueError(error_msg)
             
             if isinstance(folder_b_path, str):
-                # Check if path contains unresolved drive placeholder
-                if not folder_b_path.startswith('/') and not folder_b_path.startswith('.') and not folder_b_path.startswith('~'):
+                # Check if path is relative and contains what looks like a drive placeholder
+                if not folder_b_path.startswith('/') and not folder_b_path.startswith('~'):
                     first_part = folder_b_path.split('/')[0]
+                    # Check if it looks like a drive placeholder
                     if (first_part.isupper() and ('_' in first_part or first_part.endswith('_DRIVE'))) or \
                        first_part in ['MAIN_DRIVE', 'EXTERNAL_DRIVE', 'GOOGLE_DRIVE', 'PROTON_DRIVE', 'BACKUP_DRIVE']:
                         drives = self.config.get('drives', {})
                         if first_part not in drives:
-                            self.logger.error(f"CRITICAL: Unresolved drive placeholder '{first_part}' in sync path '{folder_b_path}'")
-                            self.logger.error(f"Available drives: {list(drives.keys())}")
-                            raise ValueError(f"Unresolved drive placeholder '{first_part}' in sync path '{folder_b_path}'. "
-                                           f"This would create a literal '{first_part}' directory. "
-                                           f"Please ensure '{first_part}' is defined in the 'drives' section of your config file.")
+                            error_msg = (f"CRITICAL BUG: Unresolved drive placeholder '{first_part}' detected in sync path '{folder_b_path}'. "
+                                       f"This would create a literal '{first_part}' directory at the current working directory. "
+                                       f"Available drives: {list(drives.keys())}. "
+                                       f"Please ensure '{first_part}' is properly defined in the 'drives' section of your config file.")
+                            self.logger.error(error_msg)
+                            raise ValueError(error_msg)
+            
+            # Log the paths before creating Path objects for debugging
+            self.logger.debug(f"Creating Path objects - folder_a_path: '{folder_a_path}', folder_b_path: '{folder_b_path}'")
             
             folder_a = Path(folder_a_path).expanduser().resolve()
             folder_b = Path(folder_b_path).expanduser().resolve()
+            
+            # Log the resolved paths
+            self.logger.debug(f"Resolved paths - folder_a: '{folder_a}', folder_b: '{folder_b}'")
+            
+            # CRITICAL: Check if resolved paths contain MAIN_DRIVE as a directory component
+            if 'MAIN_DRIVE' in folder_a.parts:
+                error_msg = (f"CRITICAL BUG: Resolved folder_a path contains literal 'MAIN_DRIVE' directory: {folder_a}. "
+                           f"Original path: '{folder_a_path}'. Path parts: {folder_a.parts}. "
+                           f"This will create a literal MAIN_DRIVE folder. Current working directory: {Path.cwd()}")
+                self.logger.error(error_msg)
+                raise ValueError(error_msg)
+            if 'MAIN_DRIVE' in folder_b.parts:
+                error_msg = (f"CRITICAL BUG: Resolved folder_b path contains literal 'MAIN_DRIVE' directory: {folder_b}. "
+                           f"Original path: '{folder_b_path}'. Path parts: {folder_b.parts}. "
+                           f"This will create a literal MAIN_DRIVE folder. Current working directory: {Path.cwd()}")
+                self.logger.error(error_msg)
+                raise ValueError(error_msg)
+            
+            # Additional safety check: ensure resolved paths are absolute
+            if not folder_a.is_absolute():
+                error_msg = f"CRITICAL: Resolved path '{folder_a}' is not absolute. Original: '{folder_a_path}'. This will cause incorrect behavior."
+                self.logger.error(error_msg)
+                raise ValueError(error_msg)
+            if not folder_b.is_absolute():
+                error_msg = f"CRITICAL: Resolved path '{folder_b}' is not absolute. Original: '{folder_b_path}'. This will cause incorrect behavior."
+                self.logger.error(error_msg)
+                raise ValueError(error_msg)
             
             # Check if folders are the same
             if folder_a == folder_b:
@@ -2607,10 +2795,35 @@ class EnhancedFileOrganizer:
                 self._save_progress()
                 continue
             
+            # CRITICAL: Validate that folder_a and folder_b don't contain MAIN_DRIVE before proceeding
+            if 'MAIN_DRIVE' in folder_a.parts:
+                error_msg = (f"CRITICAL BUG: folder_a contains literal 'MAIN_DRIVE' directory: {folder_a}. "
+                           f"Original path: '{folder_a_path}'. Path parts: {folder_a.parts}. "
+                           f"This sync pair is misconfigured and will create incorrect directory structures.")
+                self.logger.error(error_msg)
+                self.logger.error(f"Skipping sync pair {i+1} to prevent data corruption")
+                continue
+            if 'MAIN_DRIVE' in folder_b.parts:
+                error_msg = (f"CRITICAL BUG: folder_b contains literal 'MAIN_DRIVE' directory: {folder_b}. "
+                           f"Original path: '{folder_b_path}'. Path parts: {folder_b.parts}. "
+                           f"This sync pair is misconfigured and will create incorrect directory structures.")
+                self.logger.error(error_msg)
+                self.logger.error(f"Skipping sync pair {i+1} to prevent data corruption")
+                continue
+            
             # At least one folder exists, proceed with sync
             if folder_a.exists() or folder_b.exists():
                 # Use the existing folder as base for chunking if it exists
                 base_folder = folder_a if folder_a.exists() else folder_b
+                
+                # CRITICAL: Also validate base_folder doesn't contain MAIN_DRIVE
+                if 'MAIN_DRIVE' in base_folder.parts:
+                    error_msg = (f"CRITICAL BUG: base_folder contains literal 'MAIN_DRIVE' directory: {base_folder}. "
+                               f"This indicates the sync source is already in the wrong location. "
+                               f"Path parts: {base_folder.parts}. Skipping this sync pair.")
+                    self.logger.error(error_msg)
+                    self.logger.error(f"You may need to manually clean up the incorrectly created MAIN_DRIVE directory at: {Path.cwd() / 'MAIN_DRIVE'}")
+                    continue
                 
                 # Check if we should chunk this sync (large folders)
                 chunk_threshold = self.config.get('sync_chunk_subfolders', 30)
@@ -2629,6 +2842,14 @@ class EnhancedFileOrganizer:
                                 try:
                                     if hasattr(self, 'running') and not self.running:
                                         return False
+                                    
+                                    # CRITICAL: Check if subfolder_path contains MAIN_DRIVE
+                                    if 'MAIN_DRIVE' in subfolder_path.parts:
+                                        error_msg = (f"CRITICAL BUG: Subfolder path contains MAIN_DRIVE: {subfolder_path}. "
+                                                   f"Path parts: {subfolder_path.parts}. Skipping this subfolder.")
+                                        self.logger.error(error_msg)
+                                        return False
+                                    
                                     # Determine which folder this subfolder belongs to
                                     try:
                                         rel_path = subfolder_path.relative_to(folder_a)
@@ -2641,6 +2862,15 @@ class EnhancedFileOrganizer:
                                         except ValueError:
                                             self.logger.error(f"Subfolder {subfolder_path} is not relative to either sync folder")
                                             return False
+                                    
+                                    # CRITICAL: Check if other_subfolder contains MAIN_DRIVE before syncing
+                                    if 'MAIN_DRIVE' in other_subfolder.parts:
+                                        error_msg = (f"CRITICAL BUG: Calculated other_subfolder contains MAIN_DRIVE: {other_subfolder}. "
+                                                   f"Path parts: {other_subfolder.parts}. "
+                                                   f"Original subfolder: {subfolder_path}, folder_a: {folder_a}, folder_b: {folder_b}")
+                                        self.logger.error(error_msg)
+                                        return False
+                                    
                                     return self.folder_sync.sync_directories(subfolder_path, other_subfolder, sync_mode='bidirectional')
                                 except Exception as e:
                                     self.logger.error(f"Chunk sync failed for {subfolder_path}: {e}")

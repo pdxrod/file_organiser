@@ -4,8 +4,8 @@
         "MAIN_DRIVE": "/Users/yourname",
         "EXTERNAL_DRIVE": "/Volumes/YourExternalDrive",
         "PROTON_DRIVE": "/Users/yourname/ProtonDrive",
-        "GOOGLE_DRIVE": "/Users/yourname/GoogleDrive/MyFiles/",
-        "comment": "Define drive shortcuts here. You can use these names in sync_pairs below. If a drive is not available, the program will skip it gracefully."
+        "GOOGLE_DRIVE": "/Users/yourname/GoogleDrive/MyFiles",
+        "comment": "Define drive shortcuts here. You can use these names in sync_pairs and source_folders below. If a drive is not available, the program will skip it gracefully."
     },
     "sync_pairs": [
         {
@@ -28,6 +28,11 @@
             "comment5": "  4. If file exists in both but B is newer → copy from B to A"
         }
     ],
+    "source_folders": [
+        "MAIN_DRIVE/Documents",
+        "MAIN_DRIVE/Pictures"
+    ],
+    "comment_source_folders": "Optional: roots to scan for duplicate detection when enable_duplicate_detection is true. You can use drive placeholders here (e.g. MAIN_DRIVE/Documents).",
     "exclude_patterns": [
         "node_modules",
         "_build",
