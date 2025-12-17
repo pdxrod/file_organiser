@@ -35,6 +35,7 @@ import signal
 import threading
 import subprocess
 import shutil
+import warnings
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Set, Tuple, Optional
@@ -44,6 +45,13 @@ import re
 from collections import defaultdict
 import queue
 import concurrent.futures
+
+# Suppress PyTorch MPS pin_memory warnings on Apple Silicon
+# This warning is harmless - pin_memory just isn't supported on MPS, but everything still works
+# Filter must be set before torch is imported
+warnings.filterwarnings('ignore', message='.*pin_memory.*', category=UserWarning)
+warnings.filterwarnings('ignore', message='.*MPS.*', category=UserWarning)
+warnings.filterwarnings('ignore', message='.*pinned memory.*', category=UserWarning)
 
 # Third-party imports for AI/ML content analysis
 try:
@@ -68,6 +76,9 @@ except ImportError:
 try:
     from transformers import CLIPProcessor, CLIPModel
     import torch
+    # Suppress PyTorch MPS pin_memory warnings after torch import
+    import warnings
+    warnings.filterwarnings('ignore', message='.*pin_memory.*MPS.*', category=UserWarning)
 except ImportError:
     CLIPProcessor = None
     CLIPModel = None
@@ -162,7 +173,16 @@ class DynamicContentAnalyzer:
         """Lazy-load EasyOCR reader."""
         if self._easyocr_reader is None and easyocr:
             try:
-                self._easyocr_reader = easyocr.Reader(['en'], gpu=False)
+                # Suppress stderr during EasyOCR initialization to hide PyTorch MPS warnings
+                # (These warnings are harmless - pin_memory just isn't supported on MPS)
+                import sys
+                from io import StringIO
+                old_stderr = sys.stderr
+                try:
+                    sys.stderr = StringIO()
+                    self._easyocr_reader = easyocr.Reader(['en'], gpu=False)
+                finally:
+                    sys.stderr = old_stderr
             except Exception as e:
                 self.logger.warning(f"Could not load EasyOCR: {e}")
         return self._easyocr_reader
@@ -2032,9 +2052,20 @@ class EnhancedFileOrganizer:
         logger = logging.getLogger('file_organizer')
         logger.setLevel(logging.INFO)
         
+        # Filter to suppress PyTorch MPS pin_memory warnings
+        class PyTorchWarningFilter(logging.Filter):
+            def filter(self, record):
+                # Suppress PyTorch MPS pin_memory warnings
+                if 'pin_memory' in record.getMessage() and 'MPS' in record.getMessage():
+                    return False
+                return True
+        
+        pytorch_filter = PyTorchWarningFilter()
+        
         if not logger.handlers:
             # Console handler
             console_handler = logging.StreamHandler()
+            console_handler.addFilter(pytorch_filter)
             console_formatter = logging.Formatter(
                 '%(asctime)s - %(message)s',
                 datefmt='%Y-%m-%d %H:%M:%S'
@@ -2046,9 +2077,10 @@ class EnhancedFileOrganizer:
             log_file = Path.home() / '.file_organizer.log'
             log_mode = 'a' if self.test_mode else 'w'  # Append in test mode, truncate in production
             file_handler = logging.FileHandler(log_file, mode=log_mode)
+            file_handler.addFilter(pytorch_filter)
             file_handler.setFormatter(console_formatter)
             logger.addHandler(file_handler)
-            
+        
         return logger
     
     def _load_progress(self) -> Dict:
@@ -2488,8 +2520,21 @@ class EnhancedFileOrganizer:
                 if easyocr_reader:
                     try:
                         import numpy as np
+                        import sys
+                        from contextlib import redirect_stderr
+                        from io import StringIO
+                        
                         img_array = np.array(image)
-                        ocr_results = easyocr_reader.readtext(img_array)
+                        # Temporarily suppress stderr to hide PyTorch MPS pin_memory warnings
+                        # (These warnings are harmless - pin_memory just isn't supported on MPS)
+                        # Note: This may not catch warnings from PyTorch's C++ code or background threads
+                        old_stderr = sys.stderr
+                        try:
+                            sys.stderr = StringIO()
+                            ocr_results = easyocr_reader.readtext(img_array)
+                        finally:
+                            sys.stderr = old_stderr
+                        
                         # Extract text from results (format: [(bbox, text, confidence)])
                         easyocr_text = ' '.join([text for (bbox, text, conf) in ocr_results if conf > 0.3])
                         if easyocr_text.strip():
