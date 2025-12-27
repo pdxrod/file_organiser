@@ -724,16 +724,199 @@ class FolderSynchronizer:
         
         return removed_count
     
+    def _matches_pattern(self, path: Path, patterns: List[str]) -> bool:
+        """Check if path matches any pattern in the list (supports wildcards)."""
+        import fnmatch
+        
+        path_str = str(path)
+        path_parts = path.parts
+        
+        for pattern in patterns:
+            # Check if pattern contains wildcards
+            if '*' in pattern or '?' in pattern:
+                # Use fnmatch for wildcard patterns
+                # Check individual path components (directory/file names)
+                for part in path_parts:
+                    if fnmatch.fnmatch(part, pattern):
+                        return True
+                # Also check if pattern matches anywhere in the full path
+                if fnmatch.fnmatch(path_str, f"*{pattern}*"):
+                    return True
+            else:
+                # Simple substring match for patterns without wildcards
+                if pattern in path_str:
+                    return True
+        
+        return False
+    
+    def _process_excluded_folders_in_directory(self, directory: Path, organised_base: Path, max_depth: int = 20) -> None:
+        """
+        Recursively process excluded folders in a directory:
+        - softlink_folder_patterns: Backup to ~/organised and replace with soft links
+        - empty_folder_patterns: Delete contents, leave empty folders
+        
+        Processes directories recursively to find all excluded folders.
+        """
+        if max_depth <= 0:
+            return
+            
+        config = self.git_manager.config
+        softlink_patterns = config.get('softlink_folder_patterns', [])
+        empty_patterns = config.get('empty_folder_patterns', [])
+        
+        if not directory.exists() or not directory.is_dir():
+            return
+        
+        # Skip if this directory itself is in ~/organised
+        try:
+            if directory.is_relative_to(organised_base):
+                return
+        except ValueError:
+            pass
+        
+        try:
+            for item in directory.iterdir():
+                if not item.is_dir():
+                    continue
+                
+                # Skip if already a symlink (already processed)
+                if item.is_symlink():
+                    continue
+                
+                # Check if this folder matches softlink_folder_patterns
+                if softlink_patterns and self._matches_pattern(item, softlink_patterns):
+                    self._backup_and_link_folder(item, organised_base)
+                # Check if this folder matches empty_folder_patterns
+                elif empty_patterns and self._matches_pattern(item, empty_patterns):
+                    self._empty_folder(item)
+                else:
+                    # Recursively process subdirectories
+                    self._process_excluded_folders_in_directory(item, organised_base, max_depth - 1)
+        except PermissionError:
+            self.logger.warning(f"Permission denied processing excluded folders in {directory}")
+        except Exception as e:
+            self.logger.error(f"Error processing excluded folders in {directory}: {e}")
+    
+    def _backup_and_link_folder(self, folder: Path, organised_base: Path) -> None:
+        """
+        Backup a folder to ~/organised maintaining full source path structure,
+        then replace the original with a soft link.
+        
+        Example: /Users/rod/dev/bash/.git 
+        -> Backup to: /Users/rod/organised/Users/rod/dev/bash/.git
+        -> Replace with: /Users/rod/dev/bash/.git (soft link)
+        """
+        try:
+            # Skip if already a symlink
+            if folder.is_symlink():
+                return
+            
+            # Calculate backup path maintaining full source structure
+            # e.g., /Users/rod/dev/bash/.git -> ~/organised/Users/rod/dev/bash/.git
+            # Use absolute path to preserve full structure
+            folder_abs = folder.resolve()
+            # Remove leading slash and join with organised_base
+            folder_str = str(folder_abs)
+            if folder_str.startswith('/'):
+                folder_str = folder_str[1:]  # Remove leading slash
+            backup_path = organised_base / folder_str
+            backup_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # If backup already exists, check if we need to update the link
+            if backup_path.exists():
+                self.logger.debug(f"Backup already exists for {folder} at {backup_path}")
+                # Still replace with link if not already a link
+                if not folder.is_symlink():
+                    # Remove original folder (but keep contents safe in backup)
+                    if folder.exists():
+                        folder.unlink()  # Remove original folder
+                    folder.symlink_to(backup_path)
+                    self.logger.info(f"Replaced {folder} with soft link to {backup_path}")
+                elif folder.is_symlink():
+                    # Check if link points to correct location
+                    current_target = folder.readlink()
+                    if current_target != backup_path:
+                        folder.unlink()
+                        folder.symlink_to(backup_path)
+                        self.logger.info(f"Updated {folder} soft link to point to {backup_path}")
+                return
+            
+            # Copy folder contents to backup location
+            if folder.exists():
+                try:
+                    # Check if folder has contents
+                    has_contents = False
+                    try:
+                        next(folder.iterdir())
+                        has_contents = True
+                    except StopIteration:
+                        pass
+                    
+                    if has_contents:
+                        shutil.copytree(folder, backup_path, dirs_exist_ok=True)
+                        self.logger.info(f"Backed up {folder} to {backup_path}")
+                    else:
+                        # Create empty backup directory
+                        backup_path.mkdir(parents=True, exist_ok=True)
+                        self.logger.debug(f"Created empty backup directory {backup_path} for {folder}")
+                except Exception as e:
+                    self.logger.error(f"Failed to copy folder {folder} to backup: {e}")
+                    return
+            
+            # Remove original and create soft link
+            if folder.exists() and not folder.is_symlink():
+                folder.unlink()  # Remove original folder
+            folder.symlink_to(backup_path)
+            self.logger.info(f"Replaced {folder} with soft link to {backup_path}")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to backup and link folder {folder}: {e}")
+    
+    def _empty_folder(self, folder: Path) -> None:
+        """Delete all contents of a folder, leaving it empty."""
+        try:
+            if not folder.exists() or not folder.is_dir():
+                return
+            
+            # Skip if it's a symlink
+            if folder.is_symlink():
+                return
+            
+            # Delete all contents
+            for item in folder.iterdir():
+                try:
+                    if item.is_file() or item.is_symlink():
+                        item.unlink()
+                    elif item.is_dir():
+                        shutil.rmtree(item)
+                except Exception as e:
+                    self.logger.warning(f"Could not delete {item} in {folder}: {e}")
+            
+            self.logger.debug(f"Emptied folder {folder}")
+        except Exception as e:
+            self.logger.error(f"Failed to empty folder {folder}: {e}")
+    
     def should_exclude_from_sync(self, path: Path, sync_excludes: List[str]) -> bool:
         """Check if path should be excluded from sync.
         
         Supports wildcard patterns (e.g., '.tmp*', '*.pyc') and simple substring matching.
         Checks both the full path and individual path components (directory/file names).
+        Always excludes ~/organised to prevent copying the backup location.
         """
         import fnmatch
         
         path_str = str(path)
         path_parts = path.parts
+        
+        # CRITICAL: Always exclude ~/organised (where excluded folders are backed up)
+        organised_path = Path.home() / 'organised'
+        try:
+            if path.is_relative_to(organised_path) or organised_path in path.parents:
+                return True
+        except ValueError:
+            # Path is not relative, check if organised appears in path
+            if 'organised' in path_str and str(organised_path) in path_str:
+                return True
         
         for exclude in sync_excludes:
             # Check if pattern contains wildcards
@@ -939,23 +1122,29 @@ class FolderSynchronizer:
             self.logger.warning(f"Skipping sync - target may be on offline drive")
             return False
         
-        # Get sync exclusions from config
-        exclude_patterns = self.git_manager.config.get('exclude_patterns', [
-            'node_modules', '.git', '__pycache__', '.DS_Store', '*.pyc', 
-            '.venv', 'venv', 'dist', 'build', '.next', '.cache'
-        ])
+        # Get sync exclusions from config - combine all exclude patterns
+        exclude_patterns = self.git_manager.config.get('exclude_patterns', [])
+        softlink_patterns = self.git_manager.config.get('softlink_folder_patterns', [])
+        empty_patterns = self.git_manager.config.get('empty_folder_patterns', [])
+        all_exclude_patterns = exclude_patterns + softlink_patterns + empty_patterns
+        
+        # Process excluded folders before syncing
+        # This backs up softlink_folder_patterns to ~/organised and empties empty_folder_patterns
+        organised_base = Path.home() / 'organised'
+        self._process_excluded_folders_in_directory(source, organised_base)
+        self._process_excluded_folders_in_directory(target, organised_base)
         
         # For bidirectional sync, use manual Python sync (rsync is one-way)
         if sync_mode == 'bidirectional':
-            return self._sync_bidirectional(source, target, exclude_patterns, [source, target])
+            return self._sync_bidirectional(source, target, all_exclude_patterns, [source, target])
         
         # For one-way sync, try rsync first (much faster)
         use_rsync = self.git_manager.config.get('use_rsync', True)
         if use_rsync and shutil.which('rsync'):
-            return self.sync_with_rsync(source, target, sync_mode, exclude_patterns)
+            return self.sync_with_rsync(source, target, sync_mode, all_exclude_patterns)
         
         # Fallback to manual Python sync (if rsync not available)
-        return self._sync_one_way(source, target, sync_mode, exclude_patterns)
+        return self._sync_one_way(source, target, sync_mode, all_exclude_patterns)
     
     def _sync_bidirectional(self, folder_a: Path, folder_b: Path, exclude_patterns: List[str], base_paths: List[Path] = None) -> bool:
         """
@@ -1624,9 +1813,19 @@ class EnhancedFileOrganizer:
             'max_drive_usage_percent': 90,
             'max_soft_links_per_file': 6,
             'min_file_size': 1024,
+            'softlink_folder_patterns': [
+                '.git', '.hg', '.svn', '.cvs', '__pycache__', '.pytest_cache',
+                '.mypy_cache', '.tox', '.venv', 'venv', 'env'
+            ],
+            'empty_folder_patterns': [
+                'node_modules', '_build', 'deps', 'ebin', 'dist', 'build',
+                'target', '.next', '.nuxt', '.cache', '.parcel-cache',
+                'coverage', '.nyc_output', 'elm-stuff', '.elixir_ls',
+                '.stack-work'
+            ],
             'exclude_patterns': [
-                'node_modules', '.git', '__pycache__', '.DS_Store', '*.pyc',
-                '.venv', 'venv', 'env', 'dist', 'build', '.next', '.cache'
+                '.DS_Store', '*.pyc', '*.log', '.Spotlight-V100',
+                '.TemporaryItems', '.fseventsd', '.DocumentRevisions-V100'
             ],
             'exclude_extensions': ['.beam', '.pyc', '.o', '.so'],
             'exclude_folders': [],
@@ -2155,14 +2354,29 @@ class EnhancedFileOrganizer:
         """Check if path should be excluded from processing."""
         path_str = str(path)
         
+        # CRITICAL: Always exclude ~/organised (where excluded folders are backed up)
+        organised_path = Path.home() / 'organised'
+        try:
+            if path.is_relative_to(organised_path) or organised_path in path.parents:
+                return True
+        except ValueError:
+            # Path is not relative, check if organised appears in path
+            if 'organised' in path_str and str(organised_path) in path_str:
+                return True
+        
         # Check exclude_folders (absolute paths) - optional, defaults to empty list
         exclude_folders = self.config.get('exclude_folders', [])
         for exclude in exclude_folders:
             if path_str.startswith(exclude):
                 return True
         
-        # Check exclude_patterns (folder/file names anywhere in path)
-        for pattern in self.config.get('exclude_patterns', []):
+        # Check all exclude patterns (exclude_patterns, softlink_folder_patterns, empty_folder_patterns)
+        exclude_patterns = self.config.get('exclude_patterns', [])
+        softlink_patterns = self.config.get('softlink_folder_patterns', [])
+        empty_patterns = self.config.get('empty_folder_patterns', [])
+        all_patterns = exclude_patterns + softlink_patterns + empty_patterns
+        
+        for pattern in all_patterns:
             if pattern in path_str:
                 return True
         

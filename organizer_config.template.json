@@ -33,11 +33,7 @@
         "MAIN_DRIVE/Pictures"
     ],
     "comment_source_folders": "Optional: roots to scan for duplicate detection when enable_duplicate_detection is true. You can use drive placeholders here (e.g. MAIN_DRIVE/Documents).",
-    "exclude_patterns": [
-        "node_modules",
-        "_build",
-        "deps",
-        "ebin",
+    "softlink_folder_patterns": [
         ".git",
         ".hg",
         ".svn",
@@ -48,7 +44,14 @@
         ".tox",
         ".venv",
         "venv",
-        "env",
+        "env"
+    ],
+    "comment_softlink": "Folders matching these patterns are backed up to ~/organised (maintaining full source path structure) and replaced with soft links. This prevents their contents from being copied during sync operations.",
+    "empty_folder_patterns": [
+        "node_modules",
+        "_build",
+        "deps",
+        "ebin",
         "dist",
         "build",
         "target",
@@ -72,7 +75,10 @@
         ".gradle",
         ".m2",
         "tmp/cache",
-        ".tmp*",
+        ".tmp*"
+    ],
+    "comment_empty": "Folders matching these patterns have their contents deleted (leaving empty folders) every time file_organizer.py finds them.",
+    "exclude_patterns": [
         ".DS_Store",
         "*.pyc",
         "*.log",
@@ -81,7 +87,7 @@
         ".fseventsd",
         ".DocumentRevisions-V100"
     ],
-    "comment_exclude": "These patterns are excluded from sync. Files and folders matching these patterns will not be synchronized.",
+    "comment_exclude": "Files matching these patterns are excluded from sync. Note: ~/organised is always automatically excluded.",
     "output_base": "~/organized",
     "comment_output": "Where organized files are stored (with soft links). Use ~ for home directory.",
     "min_file_size": 1024,
