@@ -131,7 +131,7 @@ In `organizer_config.json` you can define **drive shortcuts**:
   - If file exists only in B → copy B → A.
   - If file exists in both and B is newer → copy B → A.
   - Otherwise → copy A → B.
-- Exclusions: `exclude_patterns` are respected (e.g. `.git`, `node_modules`, `.tmp*`).
+- Exclusions: `exclude_patterns` are respected (e.g. `.git` folders are backed up and replaced with soft links, `node_modules`, `.tmp*`).
 
 There is also an **old format** (`source`/`target`) still supported for backward compatibility, but new configs should prefer `folders`.
 

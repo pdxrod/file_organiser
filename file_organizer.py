@@ -17,7 +17,6 @@ Features:
 - Dynamic content discovery (learns categories from YOUR files)
 - Multi-volume support across file systems
 - Folder synchronization with duplicate removal (rsync with --delete)
-- Git version control integration (with proper user configuration)
 - Background backup to remote drives
 - Soft link preservation
 - Notification system for offline volumes
@@ -102,41 +101,6 @@ try:
 except ImportError:
     odf_text = None
     odf_load = None
-
-
-GITIGNORE_TEMPLATE = """.fseventsd/
-._.DS_Store
-z.exs
-config/z.exs
-
-_build
-deps
-.elixir_ls
-*.beam
-erl_crash.dump
-.compile.elixir
-
-public/assets
-node_modules
-assets/node_modules
-priv/static/js/app.js
-priv/static/js/app.js.map
-
-*.log
-pkg/
-log/*
-tmp/*
-.idea
-*~
-*\\~
-*.raw
-*.dta
-*.~lock*
-.lock
-.*.swp
-.DS_Store
-.vscode/
-"""
 
 
 class DynamicContentAnalyzer:
@@ -229,9 +193,9 @@ class DynamicContentAnalyzer:
         # Convert to lowercase
         text = text.lower()
         
-        # Split on common delimiters: spaces, dashes, underscores, dots, commas
-        # This handles filenames like "31-05-18-vienna-shoppe-kirche.jpg"
-        text = re.sub(r'[-_.,/\\()[\]{}]', ' ', text)
+        # Split on common delimiters: spaces, dashes, underscores, dots, commas, @ symbols
+        # This handles filenames like "31-05-18-vienna-shoppe-kirche.jpg" and social media handles like "@jack"
+        text = re.sub(r'[-_.,/\\()[\]{}@]', ' ', text)
         
         # Split into words BEFORE removing numbers (to filter out words containing digits)
         raw_words = text.split()
@@ -401,210 +365,12 @@ class DynamicContentAnalyzer:
             self.logger.error(f"Failed to save discovered categories: {e}")
 
 
-class GitManager:
-    """Manages Git operations for version control."""
-    
-    def __init__(self, logger: logging.Logger, config: Dict = None):
-        self.logger = logger
-        self.config = config or {}
-        
-        # Get git user from config or try to get from git global config
-        self.default_git_user = self.config.get('git_user', self._get_git_global_user())
-        self.default_git_email = self.config.get('git_email', self._get_git_global_email())
-    
-    def _get_git_global_user(self) -> str:
-        """Get git user from global config."""
-        try:
-            result = subprocess.run(
-                ['git', 'config', '--global', 'user.name'],
-                capture_output=True,
-                text=True,
-                check=True
-            )
-            return result.stdout.strip() or "UNCONFIGURED"
-        except:
-            return "UNCONFIGURED"
-    
-    def _get_git_global_email(self) -> str:
-        """Get git email from global config."""
-        try:
-            result = subprocess.run(
-                ['git', 'config', '--global', 'user.email'],
-                capture_output=True,
-                text=True,
-                check=True
-            )
-            return result.stdout.strip() or "UNCONFIGURED"
-        except:
-            return "UNCONFIGURED"
-    
-    def is_git_installed(self) -> bool:
-        """Check if git is installed."""
-        try:
-            subprocess.run(['git', '--version'], capture_output=True, check=True)
-            return True
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            return False
-    
-    def has_git_repo(self, path: Path) -> bool:
-        """Check if directory has a .git folder."""
-        return (path / '.git').exists()
-    
-    def configure_git_user(self, path: Path) -> None:
-        """
-        Configure git user for the repository.
-        Skips folders listed in git_exclude_folders config.
-        """
-        try:
-            # Check if path should be excluded from git config
-            path_str = str(path).lower()
-            exclude_folders = self.config.get('git_exclude_folders', [])
-            
-            for exclude in exclude_folders:
-                if exclude.lower() in path_str:
-                    self.logger.info(f"Skipping git user config for excluded folder: {path}")
-                    return
-            
-            # Don't configure if user/email are unconfigured
-            if 'UNCONFIGURED' in self.default_git_user or 'UNCONFIGURED' in self.default_git_email:
-                self.logger.debug(f"Git user not configured - skipping git config for {path}")
-                return
-            
-            # Set local git config for this repo
-            subprocess.run(
-                ['git', 'config', 'user.name', self.default_git_user],
-                cwd=path,
-                capture_output=True,
-                check=True
-            )
-            subprocess.run(
-                ['git', 'config', 'user.email', self.default_git_email],
-                cwd=path,
-                capture_output=True,
-                check=True
-            )
-            self.logger.info(f"Configured git user for {path}: {self.default_git_user} <{self.default_git_email}>")
-        except Exception as e:
-            self.logger.warning(f"Failed to configure git user for {path}: {e}")
-    
-    def init_repo(self, path: Path) -> bool:
-        """Initialize a new git repository."""
-        try:
-            subprocess.run(['git', 'init'], cwd=path, capture_output=True, check=True)
-            self.logger.info(f"Initialized git repository in {path}")
-            
-            # Configure git user
-            self.configure_git_user(path)
-            
-            # Create .gitignore
-            gitignore_path = path / '.gitignore'
-            if not gitignore_path.exists():
-                with open(gitignore_path, 'w') as f:
-                    f.write(GITIGNORE_TEMPLATE)
-                self.logger.info(f"Created .gitignore in {path}")
-            
-            return True
-        except Exception as e:
-            self.logger.error(f"Failed to initialize git repo in {path}: {e}")
-            return False
-    
-    def check_status(self, path: Path) -> Tuple[bool, str]:
-        """Check git status. Returns (is_clean, status_output)."""
-        try:
-            result = subprocess.run(
-                ['git', 'status', '--porcelain'],
-                cwd=path,
-                capture_output=True,
-                text=True,
-                check=True
-            )
-            is_clean = len(result.stdout.strip()) == 0
-            return is_clean, result.stdout
-        except Exception as e:
-            self.logger.error(f"Failed to check git status in {path}: {e}")
-            return False, ""
-    
-    def commit_changes(self, path: Path, message: str) -> bool:
-        """Add all changes and commit with message."""
-        try:
-            # Add all files
-            result = subprocess.run(
-                ['git', 'add', '-A'], 
-                cwd=path, 
-                capture_output=True, 
-                text=True,
-                check=False  # Don't raise exception, handle errors manually
-            )
-            
-            # Check for git errors (exit code 128 = git repo problem)
-            if result.returncode != 0:
-                if result.returncode == 128:
-                    self.logger.warning(f"Git repository issue in {path} - skipping commit")
-                    self.logger.warning(f"Git error: {result.stderr.strip()}")
-                    self.logger.info("This is common in cloud storage folders (Google Drive, Dropbox)")
-                    return True  # Return True to continue processing
-                else:
-                    self.logger.warning(f"Git add failed in {path}: {result.stderr.strip()}")
-                    return True  # Still return True to not block operations
-            
-            # Commit
-            result = subprocess.run(
-                ['git', 'commit', '-m', message],
-                cwd=path,
-                capture_output=True,
-                text=True,
-                check=False
-            )
-            
-            if result.returncode == 0:
-                self.logger.info(f"Committed changes in {path}: {message}")
-                return True
-            elif 'nothing to commit' in result.stdout or 'nothing to commit' in result.stderr:
-                self.logger.info(f"No changes to commit in {path}")
-                return True
-            else:
-                self.logger.warning(f"Git commit issue in {path}: {result.stderr.strip()}")
-                return True  # Return True anyway to not block operations
-                
-        except Exception as e:
-            self.logger.warning(f"Git operation failed in {path}: {e}")
-            return True  # Return True to continue despite git issues
-    
-    def manage_directory(self, path: Path, operation: str) -> bool:
-        """Manage git for a directory before and after changes."""
-        if not self.is_git_installed():
-            self.logger.warning("Git is not installed, skipping version control")
-            return True
-        
-        if not self.has_git_repo(path):
-            self.logger.info(f"No git repo found in {path}, initializing...")
-            if not self.init_repo(path):
-                return False
-            # Commit initial state
-            self.commit_changes(path, "Initial commit before file organizer changes")
-        else:
-            # Ensure git user is configured (for existing repos)
-            self.configure_git_user(path)
-            
-            # Check if there are uncommitted changes
-            is_clean, status = self.check_status(path)
-            if not is_clean:
-                self.logger.info(f"Uncommitted changes found in {path}, committing...")
-                self.commit_changes(path, "Auto-commit before file organizer changes")
-        
-        return True
-    
-    def commit_after_sync(self, path: Path, operation: str) -> bool:
-        """Commit changes after synchronization operation."""
-        return self.commit_changes(path, f"File organizer: {operation}")
-
-
 class FolderSynchronizer:
     """Synchronizes folders and removes duplicates."""
     
-    def __init__(self, logger: logging.Logger, git_manager: GitManager):
+    def __init__(self, logger: logging.Logger, config: Dict):
         self.logger = logger
-        self.git_manager = git_manager
+        self.config = config
     
     def _shorten_path(self, path: Path, base_paths: List[Path] = None, include_filename: bool = True) -> str:
         """
@@ -760,7 +526,7 @@ class FolderSynchronizer:
         if max_depth <= 0:
             return
             
-        config = self.git_manager.config
+        config = self.config
         softlink_patterns = config.get('softlink_folder_patterns', [])
         empty_patterns = config.get('empty_folder_patterns', [])
         
@@ -802,9 +568,9 @@ class FolderSynchronizer:
         Backup a folder to ~/organised maintaining full source path structure,
         then replace the original with a soft link.
         
-        Example: /Users/rod/dev/bash/.git 
-        -> Backup to: /Users/rod/organised/Users/rod/dev/bash/.git
-        -> Replace with: /Users/rod/dev/bash/.git (soft link)
+        Example: /Users/yourname/dev/bash/.git 
+        -> Backup to: /Users/yourname/organised/Users/yourname/dev/bash/.git
+        -> Replace with: /Users/yourname/dev/bash/.git (soft link)
         """
         try:
             # Skip if already a symlink
@@ -812,7 +578,7 @@ class FolderSynchronizer:
                 return
             
             # Calculate backup path maintaining full source structure
-            # e.g., /Users/rod/dev/bash/.git -> ~/organised/Users/rod/dev/bash/.git
+            # e.g., /Users/yourname/dev/bash/.git -> ~/organised/Users/yourname/dev/bash/.git
             # Use absolute path to preserve full structure
             folder_abs = folder.resolve()
             # Remove leading slash and join with organised_base
@@ -942,7 +708,7 @@ class FolderSynchronizer:
     def sync_with_rsync(self, source: Path, target: Path, sync_mode: str, sync_excludes: List[str]) -> bool:
         """Fast synchronization using rsync."""
         try:
-            rsync_mode = self.git_manager.config.get('rsync_checksum_mode', 'checksum')
+            rsync_mode = self.config.get('rsync_checksum_mode', 'checksum')
             self.logger.info(f"Using rsync ({rsync_mode} mode) to sync {source} -> {target}")
             
             # Build rsync command
@@ -960,12 +726,12 @@ class FolderSynchronizer:
             # else: Use timestamp comparison (rsync default - much faster for unchanged files)
 
             # Optionally rely on size-only for change detection (even faster, fewer stats calls)
-            if self.git_manager.config.get('rsync_size_only', False):
+            if self.config.get('rsync_size_only', False):
                 cmd.append('--size-only')
 
             # Add additional args to reduce metadata ops on cloud/FUSE targets if configured
             # Example: --omit-dir-times --no-perms --no-group --no-owner --delete-after
-            additional_args = self.git_manager.config.get('rsync_additional_args', []) or []
+            additional_args = self.config.get('rsync_additional_args', []) or []
             for extra in additional_args:
                 if isinstance(extra, str) and extra.strip():
                     cmd.append(extra.strip())
@@ -979,7 +745,7 @@ class FolderSynchronizer:
             cmd.append(f'{target}/')
             
             # Run rsync with timeout to prevent infinite hangs
-            timeout_minutes = self.git_manager.config.get('sync_timeout_minutes', 30)
+            timeout_minutes = self.config.get('sync_timeout_minutes', 30)
             timeout_seconds = timeout_minutes * 60
             
             self.logger.info(f"Timeout: {timeout_minutes} min | Excluding: {', '.join(sync_excludes[:5])}{'...' if len(sync_excludes) > 5 else ''}")
@@ -1003,7 +769,6 @@ class FolderSynchronizer:
                             self.logger.info(f"rsync: {line.strip()}")
                 
                 self.logger.info(f"rsync completed successfully")
-                # No automatic git operations - git repos sync like regular folders
                 return True
             elif result.returncode in [23, 24]:
                 # Partial success - some files had errors but most synced OK
@@ -1016,7 +781,6 @@ class FolderSynchronizer:
                 for line in error_lines:
                     if line.strip():
                         self.logger.warning(f"  {line.strip()}")
-                # No automatic git operations
                 return True
             else:
                 self.logger.error(f"rsync failed with exit code {result.returncode}")
@@ -1084,7 +848,7 @@ class FolderSynchronizer:
                 return False
             
             # Check disk space on target drive
-            max_usage = self.git_manager.config.get('max_drive_usage_percent', 90)
+            max_usage = self.config.get('max_drive_usage_percent', 90)
             try:
                 stat = os.statvfs(target_parent)
                 total = stat.f_blocks * stat.f_frsize
@@ -1123,9 +887,9 @@ class FolderSynchronizer:
             return False
         
         # Get sync exclusions from config - combine all exclude patterns
-        exclude_patterns = self.git_manager.config.get('exclude_patterns', [])
-        softlink_patterns = self.git_manager.config.get('softlink_folder_patterns', [])
-        empty_patterns = self.git_manager.config.get('empty_folder_patterns', [])
+        exclude_patterns = self.config.get('exclude_patterns', [])
+        softlink_patterns = self.config.get('softlink_folder_patterns', [])
+        empty_patterns = self.config.get('empty_folder_patterns', [])
         all_exclude_patterns = exclude_patterns + softlink_patterns + empty_patterns
         
         # Process excluded folders before syncing
@@ -1139,7 +903,7 @@ class FolderSynchronizer:
             return self._sync_bidirectional(source, target, all_exclude_patterns, [source, target])
         
         # For one-way sync, try rsync first (much faster)
-        use_rsync = self.git_manager.config.get('use_rsync', True)
+        use_rsync = self.config.get('use_rsync', True)
         if use_rsync and shutil.which('rsync'):
             return self.sync_with_rsync(source, target, sync_mode, all_exclude_patterns)
         
@@ -1578,7 +1342,6 @@ class EnhancedFileOrganizer:
             self.config['output_base'] = str(Path.cwd() / 'test' / 'organized')
             self.config['enable_duplicate_detection'] = False
             self.config['enable_folder_sync'] = False
-            self.config['enable_git_tracking'] = False
             self.config['enable_background_backup'] = False
             # Override ML settings for test mode to be more lenient with small dataset
             self.config['ml_content_analysis']['min_keyword_frequency'] = 2
@@ -1593,8 +1356,7 @@ class EnhancedFileOrganizer:
             self.progress_file = Path.home() / '.file_organizer_progress.json'
         
         # Initialize managers (after config overrides)
-        self.git_manager = GitManager(self.logger, self.config)
-        self.folder_sync = FolderSynchronizer(self.logger, self.git_manager)
+        self.folder_sync = FolderSynchronizer(self.logger, self.config)
         self.background_backup = BackgroundBackup(self.logger, self.config)
         self.content_analyzer = DynamicContentAnalyzer(self.logger, self.config)
         
@@ -1801,7 +1563,6 @@ class EnhancedFileOrganizer:
             'enable_content_analysis': True,
             'enable_duplicate_detection': False,
             'enable_folder_sync': False,
-            'enable_git_tracking': False,
             'enable_background_backup': False,
             'use_rsync': True,
             'rsync_checksum_mode': 'timestamp',
@@ -1832,12 +1593,9 @@ class EnhancedFileOrganizer:
             'source_folders': [],
             'sync_pairs': [],
             'backup_directories': [],
-            'git_exclude_folders': [],
             'drives': {},
             'output_base': '',
-            'backup_drive_path': '',
-            'git_user': 'UNCONFIGURED',
-            'git_email': 'UNCONFIGURED'
+            'backup_drive_path': ''
         }
         
         # Apply defaults for missing keys
@@ -2890,9 +2648,9 @@ class EnhancedFileOrganizer:
             
             # Analyze file with dynamic content analyzer
             # This learns keywords from both path and content
-            self.content_analyzer.analyze_file(file_path, content)
+            keywords = self.content_analyzer.analyze_file(file_path, content)
             
-            # Classify file by type and year
+            # Classify file by type and year (these don't count toward max_categories)
             classifications = set()
             classifications.update(self.classify_by_type(file_path))
             classifications.update(self.classify_by_year(file_path))
@@ -2900,6 +2658,10 @@ class EnhancedFileOrganizer:
             # Create soft links for basic classifications
             for classification in classifications:
                 self.create_soft_link(file_path, classification, file_path.name)
+            
+            # Note: Individual keywords are tracked but categories are only created through
+            # the discovered_categories() method, which respects max_categories limit.
+            # This prevents category explosion while still learning from all files.
             
             self.processed_files.add(str(file_path))
             
@@ -3317,9 +3079,12 @@ class EnhancedFileOrganizer:
             return
         if self.config.get('ml_content_analysis', {}).get('enabled', True):
             self.logger.info("Step 2: Discovering content categories from analyzed files...")
+            # Reset category tracking before discovering categories (individual keywords already tracked)
+            # Note: discovered_categories() already respects max_categories internally
             discovered_categories = self.content_analyzer.discover_categories()
             
             # Create soft links for discovered categories
+            # (discovered_categories() already respects max_categories internally)
             for category_name, file_paths in discovered_categories.items():
                 if hasattr(self, 'running') and not self.running:
                     return
@@ -3540,7 +3305,6 @@ def get_test_config():
         "enable_content_analysis": True,
         "enable_duplicate_detection": False,  # Disable for test
         "enable_folder_sync": False,  # Disable for test
-        "enable_git_tracking": False,  # Disable for test
         "enable_background_backup": False,  # Disable for test
         "flaky_volume_retries": 3,
         "retry_delay": 5,
