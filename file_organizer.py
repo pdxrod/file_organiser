@@ -26,6 +26,30 @@ Features:
 
 import os
 import sys
+
+# Suppress macOS MallocStackLogging warnings (harmless but annoying)
+# This warning appears when libraries (like PyTorch/NumPy) try to disable malloc stack logging
+# that was never enabled. We filter stderr to suppress this specific message.
+class MallocStackLoggingFilter:
+    """Filter to suppress macOS MallocStackLogging warnings from stderr."""
+    def __init__(self, original_stderr):
+        self.original_stderr = original_stderr
+    
+    def write(self, message):
+        # Suppress the specific MallocStackLogging warning
+        if 'MallocStackLogging' in message and ("can't turn off" in message or "not enabled" in message):
+            return  # Suppress this message
+        self.original_stderr.write(message)
+    
+    def flush(self):
+        self.original_stderr.flush()
+    
+    def __getattr__(self, name):
+        return getattr(self.original_stderr, name)
+
+# Apply the filter to stderr before any imports that might trigger the warning
+sys.stderr = MallocStackLoggingFilter(sys.stderr)
+
 import time
 import hashlib
 import logging
@@ -40,6 +64,7 @@ from datetime import datetime
 from typing import Dict, List, Set, Tuple, Optional
 import mimetypes
 import json
+import yaml
 import re
 from collections import defaultdict
 import queue
@@ -1312,7 +1337,7 @@ class BackgroundBackup:
 class EnhancedFileOrganizer:
     """Enhanced file organizer with full production features."""
     
-    def __init__(self, config_file: str = "organizer_config.json", test_mode: bool = False):
+    def __init__(self, config_file: str = "organizer_config.yaml", test_mode: bool = False):
         self.config_file = config_file
         self.test_mode = test_mode
         self.config = self._load_config()
@@ -1330,7 +1355,7 @@ class EnhancedFileOrganizer:
                         f"  1. Stop the file organizer\n"
                         f"  2. Review the contents of {main_drive_dir} to see what was incorrectly copied\n"
                         f"  3. Delete the directory: rm -rf {main_drive_dir}\n"
-                        f"  4. Check your organizer_config.json to ensure all drive placeholders are properly resolved")
+                        f"  4. Check your organizer_config.yaml to ensure all drive placeholders are properly resolved")
             self.logger.error(error_msg)
             if not test_mode:
                 print("\n" + "=" * 70)
@@ -1356,7 +1381,7 @@ class EnhancedFileOrganizer:
                 print("This teaches you the proper setup for production mode.")
                 
                 # Check if template exists
-                template_file = "organizer_config.template.json"
+                template_file = "organizer_config.template.yaml"
                 if os.path.exists(template_file):
                     print("\nTo get started:")
                     print(f"  1. Copy the template:  cp {template_file} {self.config_file}")
@@ -1432,65 +1457,129 @@ class EnhancedFileOrganizer:
         self.processed_files = set()
         
     def _load_config(self) -> Dict:
-        """Load configuration from JSON file."""
-        if os.path.exists(self.config_file):
-            try:
-                with open(self.config_file, 'r') as f:
-                    config = json.load(f)
-                
-                # Always validate config if it exists (both test and production modes)
-                self._validate_config_sanity(config)
-                return config
-                
-            except json.JSONDecodeError as e:
-                # JSON syntax error
-                print("\n" + "=" * 70)
-                print("INVALID JSON CONFIGURATION")
-                print("=" * 70)
-                print(f"\nThe file '{self.config_file}' contains invalid JSON:")
-                print(f"  {e}")
-                print("\nThis is a common mistake when editing configuration files.")
-                print("\nTo fix this:")
-                print("  1. Check for missing commas, brackets, or quotes")
-                print("  2. Use a JSON validator: https://jsonlint.com/")
-                print("  3. Or start fresh: cp organizer_config.template.json organizer_config.json")
-                print("\n" + "=" * 70 + "\n")
-                sys.exit(1)
-            except Exception as e:
-                # Other config errors (caught by sanity check)
-                print("\n" + "=" * 70)
-                print("CONFIGURATION VALIDATION FAILED")
-                print("=" * 70)
-                print(f"\nThe file '{self.config_file}' has configuration errors:")
-                print(f"  {e}")
-                print("\nPlease fix these errors before running the program.")
-                print("\n" + "=" * 70 + "\n")
-                sys.exit(1)
-        else:
-            # Config file doesn't exist
-            if self.test_mode:
-                # Test mode: OK, will use auto-generated config
-                return {}
+        """Load configuration from YAML file."""
+        if not os.path.exists(self.config_file):
+            # Config file doesn't exist - require it even in test mode
+            print("\n" + "=" * 70)
+            print("ERROR: Configuration file not found!")
+            print("=" * 70)
+            print(f"\nThe file '{self.config_file}' does not exist.")
+            print("\nA valid configuration file is required, even in test mode.")
+            
+            # Check if template exists
+            template_file = "organizer_config.template.yaml"
+            if os.path.exists(template_file):
+                print("\nTo get started:")
+                print(f"  1. Copy the template:  cp {template_file} {self.config_file}")
+                print(f"  2. Edit your config:   nano {self.config_file}")
+                print("  3. Update the 'drives' section with your actual paths")
+                print(f"  4. Run the program again")
             else:
-                # Production mode: Required!
+                print(f"\nPlease create {self.config_file} with your drive configurations.")
+            
+            print("\n" + "=" * 70 + "\n")
+            sys.exit(1)
+        
+        # Check for TAB characters in the file (YAML doesn't allow tabs)
+        try:
+            with open(self.config_file, 'r') as f:
+                content = f.read()
+                lines = content.split('\n')
+                for line_num, line in enumerate(lines, 1):
+                    if '\t' in line:
+                        print("\n" + "=" * 70)
+                        print("INVALID YAML CONFIGURATION")
+                        print("=" * 70)
+                        print(f"\nThe file '{self.config_file}' contains TAB characters on line {line_num}.")
+                        print("\nYAML does not allow TAB characters for indentation. You must use SPACES instead.")
+                        print("\nThis is a common mistake when editing YAML files.")
+                        print("\nTo fix this:")
+                        print("  1. Open the file in your editor")
+                        print(f"  2. Find line {line_num} and replace any TAB characters with spaces")
+                        print("  3. Most editors have a 'Show Whitespace' or 'Show Invisibles' option")
+                        print("  4. You can also use: sed -i '' 's/\\t/  /g' " + self.config_file)
+                        print("\n" + "=" * 70 + "\n")
+                        sys.exit(1)
+        except Exception as e:
+            print("\n" + "=" * 70)
+            print("ERROR: Could not read configuration file")
+            print("=" * 70)
+            print(f"\nFailed to read '{self.config_file}':")
+            print(f"  {e}")
+            print("\n" + "=" * 70 + "\n")
+            sys.exit(1)
+        
+        # Try to load and parse the YAML file
+        try:
+            with open(self.config_file, 'r') as f:
+                config = yaml.safe_load(f)
+            
+            if config is None:
                 print("\n" + "=" * 70)
-                print("ERROR: Configuration file not found!")
+                print("INVALID YAML CONFIGURATION")
                 print("=" * 70)
-                print(f"\nThe file '{self.config_file}' does not exist.")
-                
-                # Check if template exists
-                template_file = "organizer_config.template.json"
-                if os.path.exists(template_file):
-                    print("\nTo get started:")
-                    print(f"  1. Copy the template:  cp {template_file} {self.config_file}")
-                    print(f"  2. Edit your config:   nano {self.config_file}")
-                    print("  3. Update the 'drives' section with your actual paths")
-                    print(f"  4. Run the program again")
-                else:
-                    print(f"\nPlease create {self.config_file} with your drive configurations.")
-                
+                print(f"\nThe file '{self.config_file}' appears to be empty or contains no valid YAML.")
+                print("\nPlease ensure the file contains valid YAML configuration.")
                 print("\n" + "=" * 70 + "\n")
                 sys.exit(1)
+            
+            # Always validate config if it exists (both test and production modes)
+            self._validate_config_sanity(config)
+            return config
+            
+        except yaml.YAMLError as e:
+            # YAML syntax error - provide user-friendly error messages
+            print("\n" + "=" * 70)
+            print("INVALID YAML CONFIGURATION")
+            print("=" * 70)
+            
+            error_msg = str(e)
+            if hasattr(e, 'problem_mark'):
+                mark = e.problem_mark
+                line_num = mark.line + 1
+                col_num = mark.column + 1
+                print(f"\nThe file '{self.config_file}' contains invalid YAML at line {line_num}, column {col_num}:")
+                print(f"  {error_msg}")
+                
+                # Check for common indentation issues
+                if 'indentation' in error_msg.lower() or 'expected' in error_msg.lower():
+                    print("\nThis looks like an indentation error. YAML is very sensitive to indentation.")
+                    print("\nCommon causes:")
+                    print("  - Mixing spaces and tabs (YAML requires spaces only)")
+                    print("  - Incorrect number of spaces for indentation")
+                    print("  - Inconsistent indentation levels")
+                    print("\nTo fix this:")
+                    print(f"  1. Check line {line_num} in your config file")
+                    print("  2. Ensure you're using SPACES (not tabs) for indentation")
+                    print("  3. YAML typically uses 2 spaces per indentation level")
+                    print("  4. Make sure all items at the same level use the same indentation")
+                else:
+                    print("\nThis is a YAML syntax error.")
+                    print("\nTo fix this:")
+                    print("  1. Check the line and column mentioned above")
+                    print("  2. Ensure proper YAML syntax (colons, dashes, quotes, etc.)")
+                    print("  3. Use a YAML validator: https://www.yamllint.com/")
+            else:
+                print(f"\nThe file '{self.config_file}' contains invalid YAML:")
+                print(f"  {error_msg}")
+                print("\nThis is a common mistake when editing YAML configuration files.")
+                print("\nTo fix this:")
+                print("  1. Check for syntax errors (missing colons, incorrect indentation, etc.)")
+                print("  2. Use a YAML validator: https://www.yamllint.com/")
+                print("  3. Or start fresh: cp organizer_config.template.yaml " + self.config_file)
+            
+            print("\n" + "=" * 70 + "\n")
+            sys.exit(1)
+        except Exception as e:
+            # Other config errors (caught by sanity check)
+            print("\n" + "=" * 70)
+            print("CONFIGURATION VALIDATION FAILED")
+            print("=" * 70)
+            print(f"\nThe file '{self.config_file}' has configuration errors:")
+            print(f"  {e}")
+            print("\nPlease fix these errors before running the program.")
+            print("\n" + "=" * 70 + "\n")
+            sys.exit(1)
     
     def _validate_config_sanity(self, config: Dict):
         """Validate config for basic sanity (both test and production modes)."""
@@ -1861,7 +1950,7 @@ class EnhancedFileOrganizer:
                 print()
             
             print("Please fix the configuration file and try again.")
-            print("See organizer_config.template.json for a valid example.")
+            print("See organizer_config.template.yaml for a valid example.")
             print("=" * 70 + "\n")
             
             if errors:
@@ -1880,7 +1969,7 @@ class EnhancedFileOrganizer:
             print("=" * 70)
             print(f"\nConfiguration file: {self.config_file}")
             print("Please add a 'drives' section to your config file.")
-            print("\nSee organizer_config.template.json for an example.")
+            print("\nSee organizer_config.template.yaml for an example.")
             print("=" * 70 + "\n")
             sys.exit(1)
         
@@ -3404,6 +3493,139 @@ def check_already_running():
         return False, []
 
 
+def validate_config_file(config_file: str) -> bool:
+    """
+    Validate the YAML config file before starting the organizer.
+    Returns True if valid, prints error and exits with code 1 if invalid.
+    This is called before daemonizing so errors are shown immediately.
+    """
+    if not os.path.exists(config_file):
+        print("\n" + "=" * 70)
+        print("ERROR: Configuration file not found!")
+        print("=" * 70)
+        print(f"\nThe file '{config_file}' does not exist.")
+        print("\nA valid configuration file is required, even in test mode.")
+        
+        template_file = "organizer_config.template.yaml"
+        if os.path.exists(template_file):
+            print("\nTo get started:")
+            print(f"  1. Copy the template:  cp {template_file} {config_file}")
+            print(f"  2. Edit your config:   nano {config_file}")
+            print("  3. Update the 'drives' section with your actual paths")
+            print(f"  4. Run the program again")
+        else:
+            print(f"\nPlease create {config_file} with your drive configurations.")
+        
+        print("\n" + "=" * 70 + "\n")
+        sys.exit(1)
+    
+    # Check for TAB characters in the file (YAML doesn't allow tabs)
+    try:
+        with open(config_file, 'r') as f:
+            content = f.read()
+            lines = content.split('\n')
+            for line_num, line in enumerate(lines, 1):
+                if '\t' in line:
+                    print("\n" + "=" * 70)
+                    print("INVALID YAML CONFIGURATION")
+                    print("=" * 70)
+                    print(f"\nThe file '{config_file}' contains TAB characters on line {line_num}.")
+                    print("\nYAML does not allow TAB characters for indentation. You must use SPACES instead.")
+                    print("\nThis is a common mistake when editing YAML files.")
+                    print("\nTo fix this:")
+                    print("  1. Open the file in your editor")
+                    print(f"  2. Find line {line_num} and replace any TAB characters with spaces")
+                    print("  3. Most editors have a 'Show Whitespace' or 'Show Invisibles' option")
+                    print("  4. You can also use: sed -i '' 's/\\t/  /g' " + config_file)
+                    print("\n" + "=" * 70 + "\n")
+                    sys.exit(1)
+    except Exception as e:
+        print("\n" + "=" * 70)
+        print("ERROR: Could not read configuration file")
+        print("=" * 70)
+        print(f"\nFailed to read '{config_file}':")
+        print(f"  {e}")
+        print("\n" + "=" * 70 + "\n")
+        sys.exit(1)
+    
+    # Try to load and parse the YAML file
+    try:
+        with open(config_file, 'r') as f:
+            config = yaml.safe_load(f)
+        
+        if config is None:
+            print("\n" + "=" * 70)
+            print("INVALID YAML CONFIGURATION")
+            print("=" * 70)
+            print(f"\nThe file '{config_file}' appears to be empty or contains no valid YAML.")
+            print("\nPlease ensure the file contains valid YAML configuration.")
+            print("\n" + "=" * 70 + "\n")
+            sys.exit(1)
+        
+        # Basic validation - just check it's a dict
+        if not isinstance(config, dict):
+            print("\n" + "=" * 70)
+            print("INVALID YAML CONFIGURATION")
+            print("=" * 70)
+            print(f"\nThe file '{config_file}' does not contain a valid configuration dictionary.")
+            print("\n" + "=" * 70 + "\n")
+            sys.exit(1)
+        
+        return True
+        
+    except yaml.YAMLError as e:
+        # YAML syntax error - provide user-friendly error messages
+        print("\n" + "=" * 70)
+        print("INVALID YAML CONFIGURATION")
+        print("=" * 70)
+        
+        error_msg = str(e)
+        if hasattr(e, 'problem_mark'):
+            mark = e.problem_mark
+            line_num = mark.line + 1
+            col_num = mark.column + 1
+            print(f"\nThe file '{config_file}' contains invalid YAML at line {line_num}, column {col_num}:")
+            print(f"  {error_msg}")
+            
+            # Check for common indentation issues
+            if 'indentation' in error_msg.lower() or 'expected' in error_msg.lower():
+                print("\nThis looks like an indentation error. YAML is very sensitive to indentation.")
+                print("\nCommon causes:")
+                print("  - Mixing spaces and tabs (YAML requires spaces only)")
+                print("  - Incorrect number of spaces for indentation")
+                print("  - Inconsistent indentation levels")
+                print("\nTo fix this:")
+                print(f"  1. Check line {line_num} in your config file")
+                print("  2. Ensure you're using SPACES (not tabs) for indentation")
+                print("  3. YAML typically uses 2 spaces per indentation level")
+                print("  4. Make sure all items at the same level use the same indentation")
+            else:
+                print("\nThis is a YAML syntax error.")
+                print("\nTo fix this:")
+                print("  1. Check the line and column mentioned above")
+                print("  2. Ensure proper YAML syntax (colons, dashes, quotes, etc.)")
+                print("  3. Use a YAML validator: https://www.yamllint.com/")
+        else:
+            print(f"\nThe file '{config_file}' contains invalid YAML:")
+            print(f"  {error_msg}")
+            print("\nThis is a common mistake when editing YAML configuration files.")
+            print("\nTo fix this:")
+            print("  1. Check for syntax errors (missing colons, incorrect indentation, etc.)")
+            print("  2. Use a YAML validator: https://www.yamllint.com/")
+            print("  3. Or start fresh: cp organizer_config.template.yaml " + config_file)
+        
+        print("\n" + "=" * 70 + "\n")
+        sys.exit(1)
+    except Exception as e:
+        print("\n" + "=" * 70)
+        print("ERROR: Could not validate configuration file")
+        print("=" * 70)
+        print(f"\nFailed to validate '{config_file}':")
+        print(f"  {e}")
+        print("\n" + "=" * 70 + "\n")
+        sys.exit(1)
+
+
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
@@ -3426,10 +3648,19 @@ def main():
                        help='Kill any existing file_organizer processes before starting')
     parser.add_argument('--no-daemon', action='store_true',
                        help='Do not background the process in production mode (foreground logging)')
+    parser.add_argument('--validate-config', action='store_true',
+                       help='Validate configuration file and exit (does not run organizer)')
     # Internal flag used after relaunching as a background process to suppress console output
     parser.add_argument('--internal-daemon', action='store_true', help=argparse.SUPPRESS)
     
     args = parser.parse_args()
+    
+    # If --validate-config, validate and exit early (skip other checks)
+    if args.validate_config:
+        config_file = args.config or 'organizer_config.yaml'
+        validate_config_file(config_file)
+        print("\n✓ Configuration file is valid!")
+        sys.exit(0)
     
     # Check if already running (unless creating test environment)
     if not args.create_test:
@@ -3483,7 +3714,7 @@ def main():
         print("=" * 70)
         print("PRODUCTION MODE - Operating on your entire file system")
         print("=" * 70)
-        config_file = args.config or 'organizer_config.json'
+        config_file = args.config or 'organizer_config.yaml'
     else:
         if not args.internal_daemon:
             print("=" * 70)
@@ -3498,8 +3729,12 @@ def main():
             create_test_environment()
             print()
         
-        # In test mode, still require organizer_config.json for educational setup
-        config_file = args.config or 'organizer_config.json'
+        # In test mode, still require organizer_config.yaml (even though test mode doesn't use it)
+        config_file = args.config or 'organizer_config.yaml'
+    
+    # Validate config file BEFORE daemonizing (so errors show immediately)
+    # This function will exit with code 1 if validation fails
+    validate_config_file(config_file)
     
     # In production mode, if not a one-shot scan and not explicitly disabled, daemonize
     if production_mode and not args.scan_once and not args.no_daemon and not args.internal_daemon:

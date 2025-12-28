@@ -19,10 +19,37 @@ case "$1" in
                 exit 1
             fi
         fi
+        
+        # Validate config file before starting (run validation in foreground to show errors)
+        echo "Validating configuration file..."
+        VALIDATION_OUTPUT=$(python "$SCRIPT_NAME" --REAL --validate-config 2>&1)
+        VALIDATION_EXIT=$?
+        
+        if [ $VALIDATION_EXIT -ne 0 ]; then
+            echo ""
+            echo "$VALIDATION_OUTPUT"
+            echo ""
+            exit 1
+        fi
+        
+        echo "✓ Configuration file is valid"
+        
+        # Config is valid, now start in background
         nohup python "$SCRIPT_NAME" --REAL > /dev/null 2>&1 &
-        echo $! > "$PID_FILE"
-        echo "File Organizer started in PRODUCTION MODE (PID: $(cat $PID_FILE))"
-        echo "Log file: $LOG_FILE"
+        PID=$!
+        echo $PID > "$PID_FILE"
+        
+        # Give it a moment to start, then check if it's still running
+        sleep 1
+        if ps -p "$PID" > /dev/null 2>&1; then
+            echo "File Organizer started in PRODUCTION MODE (PID: $PID)"
+            echo "Log file: $LOG_FILE"
+        else
+            echo "ERROR: File Organizer failed to start!"
+            echo "Check the log file for details: $LOG_FILE"
+            rm -f "$PID_FILE"
+            exit 1
+        fi
         ;;
     
     stop)

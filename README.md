@@ -5,7 +5,7 @@
 > This tool moves, copies, synchronizes, and can DELETE files across your system.
 > - Always keep current backups
 > - Start in **test mode** and review logs before using real data
-> - Review your `organizer_config.json` carefully
+> - Review your `organizer_config.yaml` carefully
 > - Folder sync and deduplication can delete real files when misconfigured
 > - No warranty is provided - see LICENSE
 
@@ -71,7 +71,7 @@ There are two primary ways to use it:
 - **How to run:**
   - `python file_organizer.py --REAL --dedupe-only`
 - **What it does (current implementation):**
-  - Looks at the `source_folders` list in `organizer_config.json`.
+  - Looks at the `source_folders` list in `organizer_config.yaml`.
   - Recursively scans those directories for **real files**.
   - Groups files by **content hash** (MD5) and removes duplicates, keeping only the newest copy in each group.
 - **Important:**
@@ -90,15 +90,14 @@ The README text in earlier versions said dedupe only touched `~/organized` soft 
 
 ### Drives and Placeholders
 
-In `organizer_config.json` you can define **drive shortcuts**:
+In `organizer_config.yaml` you can define **drive shortcuts**:
 
-```json
-"drives": {
-  "MAIN_DRIVE": "/Users/yourname",
-  "EXTERNAL_DRIVE": "/Volumes/YourExternalDrive",
-  "PROTON_DRIVE": "MAIN_DRIVE/ProtonDrive",
-  "GOOGLE_DRIVE": "MAIN_DRIVE/GoogleDrive/MyFiles"
-}
+```yaml
+drives:
+  MAIN_DRIVE: "/Users/yourname"
+  EXTERNAL_DRIVE: "/Volumes/YourExternalDrive"
+  PROTON_DRIVE: "MAIN_DRIVE/ProtonDrive"
+  GOOGLE_DRIVE: "MAIN_DRIVE/GoogleDrive/MyFiles"
 ```
 
 - Placeholders like `MAIN_DRIVE`, `GOOGLE_DRIVE`, etc. are resolved at startup.
@@ -110,19 +109,16 @@ In `organizer_config.json` you can define **drive shortcuts**:
 
 ### Sync Pairs (Folder Synchronization)
 
-`sync_pairs` describe which folders should be synchronized. The current recommended format uses a `folders` array of two paths (order doesn’t matter – sync is bidirectional):
+`sync_pairs` describe which folders should be synchronized. The current recommended format uses a `folders` array of two paths (order doesn't matter – sync is bidirectional):
 
-```json
-"sync_pairs": [
-  {
-    "comment": "Example: main dev ↔ external dev",
-    "folders": ["MAIN_DRIVE/dev", "EXTERNAL_DRIVE/dev"]
-  },
-  {
-    "comment": "Example: documents ↔ Google Drive documents",
-    "folders": ["MAIN_DRIVE/Documents", "GOOGLE_DRIVE/Documents"]
-  }
-]
+```yaml
+sync_pairs:
+  - folders:
+      - "MAIN_DRIVE/dev"
+      - "EXTERNAL_DRIVE/dev"
+  - folders:
+      - "MAIN_DRIVE/Documents"
+      - "GOOGLE_DRIVE/Documents"
 ```
 
 - Each `folders` entry becomes two absolute paths after drive resolution.
@@ -139,11 +135,10 @@ There is also an **old format** (`source`/`target`) still supported for backward
 
 `source_folders` are **only used for deduplication** in this implementation:
 
-```json
-"source_folders": [
-  "MAIN_DRIVE/Documents",
-  "MAIN_DRIVE/Pictures"
-]
+```yaml
+source_folders:
+  - "MAIN_DRIVE/Documents"
+  - "MAIN_DRIVE/Pictures"
 ```
 
 - These are resolved via the `drives` section the same way as `sync_pairs`.
@@ -174,7 +169,7 @@ The organizer writes soft links into `output_base` (default `~/organized` in pro
 
 ## Configuration Summary
 
-Core keys in `organizer_config.json`:
+Core keys in `organizer_config.yaml`:
 
 - **`drives`**: Drive shortcuts, can be nested and used in other paths.
 - **`sync_pairs`**: Folder pairs to keep in sync (bidirectional).
@@ -188,44 +183,78 @@ Core keys in `organizer_config.json`:
 
 A minimal production config using drives and sync pairs might look like:
 
-```json
-{
-  "drives": {
-    "MAIN_DRIVE": "/Users/rod",
-    "EXTERNAL_DRIVE": "/Volumes/PASSPORT3",
-    "PROTON_DRIVE": "MAIN_DRIVE/ProtonDrive",
-    "GOOGLE_DRIVE": "MAIN_DRIVE/GoogleDrive/MyFiles"
-  },
-  "sync_pairs": [
-    { "folders": ["MAIN_DRIVE/dev", "GOOGLE_DRIVE/dev"] },
-    { "folders": ["MAIN_DRIVE/Documents", "PROTON_DRIVE/Documents"] }
-  ],
-  "exclude_patterns": [
-    "node_modules", "_build", "deps", "ebin", ".git",
-    "__pycache__", ".pytest_cache", ".mypy_cache", ".tox",
-    ".venv", "venv", "env", "dist", "build", "target",
-    ".next", ".cache", ".parcel-cache", "coverage", ".nyc_output",
-    "elm-stuff", ".elixir_ls", ".stack-work", "Photos Library.photoslibrary",
-    ".photoslibrary", "iPhoto Library", "Lightroom", ".bundle", "vendor",
-    "bundle", "priv/static", ".gradle", ".m2", "tmp/cache", ".tmp*",
-    ".DS_Store", "*.pyc", "*.log", ".Spotlight-V100", ".TemporaryItems",
-    ".fseventsd", ".DocumentRevisions-V100"
-  ],
-  "output_base": "~/organized",
-  "enable_content_analysis": true,
-  "enable_folder_sync": true,
-  "enable_duplicate_detection": false
-}
+```yaml
+drives:
+  MAIN_DRIVE: "/Users/rod"
+  EXTERNAL_DRIVE: "/Volumes/PASSPORT3"
+  PROTON_DRIVE: "MAIN_DRIVE/ProtonDrive"
+  GOOGLE_DRIVE: "MAIN_DRIVE/GoogleDrive/MyFiles"
+
+sync_pairs:
+  - folders:
+      - "MAIN_DRIVE/dev"
+      - "GOOGLE_DRIVE/dev"
+  - folders:
+      - "MAIN_DRIVE/Documents"
+      - "PROTON_DRIVE/Documents"
+
+exclude_patterns:
+  - "node_modules"
+  - "_build"
+  - "deps"
+  - "ebin"
+  - ".git"
+  - "__pycache__"
+  - ".pytest_cache"
+  - ".mypy_cache"
+  - ".tox"
+  - ".venv"
+  - "venv"
+  - "env"
+  - "dist"
+  - "build"
+  - "target"
+  - ".next"
+  - ".cache"
+  - ".parcel-cache"
+  - "coverage"
+  - ".nyc_output"
+  - "elm-stuff"
+  - ".elixir_ls"
+  - ".stack-work"
+  - "Photos Library.photoslibrary"
+  - ".photoslibrary"
+  - "iPhoto Library"
+  - "Lightroom"
+  - ".bundle"
+  - "vendor"
+  - "bundle"
+  - "priv/static"
+  - ".gradle"
+  - ".m2"
+  - "tmp/cache"
+  - ".tmp*"
+  - ".DS_Store"
+  - "*.pyc"
+  - "*.log"
+  - ".Spotlight-V100"
+  - ".TemporaryItems"
+  - ".fseventsd"
+  - ".DocumentRevisions-V100"
+
+output_base: "~/organized"
+enable_content_analysis: true
+enable_folder_sync: true
+enable_duplicate_detection: false
 ```
 
 If you later want deduplication of **real files**, you would add for example:
 
-```json
-"source_folders": [
-  "MAIN_DRIVE/Documents",
-  "MAIN_DRIVE/Pictures"
-],
-"enable_duplicate_detection": true
+```yaml
+source_folders:
+  - "MAIN_DRIVE/Documents"
+  - "MAIN_DRIVE/Pictures"
+enable_duplicate_detection: true
 ```
 
 …and then run with `--REAL` (full cycle) or `--REAL --dedupe-only` (just dedup).
@@ -243,7 +272,7 @@ Options:
   --create-test        Create test environment under ./test and exit
   --sync-only          Only synchronize folders (production mode)
   --dedupe-only        Only run deduplication (production mode)
-  --config PATH        Use a custom config file (default: organizer_config.json)
+  --config PATH        Use a custom config file (default: organizer_config.yaml)
 ```
 
 Typical flows:
@@ -273,7 +302,7 @@ Before running in production mode with real files:
 
 - **Backups:** You have current backups of anything important.
 - **Tested:** You have run at least one full cycle in test mode and reviewed `test/organized/`.
-- **Config reviewed:** `drives`, `sync_pairs`, and (if used) `source_folders` point only to locations you are comfortable modifying.
+- **Config reviewed:** `organizer_config.yaml` is valid YAML (no tabs, proper indentation) and `drives`, `sync_pairs`, and (if used) `source_folders` point only to locations you are comfortable modifying.
 - **Dedup clarity:** You understand that current dedup logic deletes **real files under `source_folders`**, not just soft links.
 - **Logs monitored:** You know how to watch `~/.file_organizer.log` and stop the process if something looks wrong.
 

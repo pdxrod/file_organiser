@@ -3,6 +3,7 @@ Pillow>=9.0.0
 pytesseract>=0.3.10
 opencv-python>=4.8.0  # Also installs numpy
 pdf2image>=1.16.0
+PyYAML>=6.0
 
 # Advanced AI/ML for image understanding
 easyocr>=1.7.0  # Better OCR for artistic text

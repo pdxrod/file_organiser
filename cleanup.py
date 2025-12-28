@@ -10,13 +10,13 @@ WARNING: This script will DELETE soft links and restore folders. Run with care.
 """
 
 import os
-import json
+import yaml
 import shutil
 from pathlib import Path
 
 def load_config():
-    """Load organizer_config.json to get softlink_folder_patterns."""
-    config_path = Path(__file__).parent / 'organizer_config.json'
+    """Load organizer_config.yaml to get softlink_folder_patterns."""
+    config_path = Path(__file__).parent / 'organizer_config.yaml'
     if not config_path.exists():
         print(f"Warning: {config_path} not found, using default patterns")
         return ['.git', '.hg', '.svn', '.cvs', '__pycache__', '.pytest_cache', 
@@ -24,8 +24,8 @@ def load_config():
     
     try:
         with open(config_path, 'r') as f:
-            config = json.load(f)
-        return config.get('softlink_folder_patterns', [])
+            config = yaml.safe_load(f)
+        return config.get('softlink_folder_patterns', []) if config else []
     except Exception as e:
         print(f"Error loading config: {e}, using default patterns")
         return ['.git', '.hg', '.svn', '.cvs', '__pycache__', '.pytest_cache', 

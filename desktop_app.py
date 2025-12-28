@@ -11,7 +11,7 @@ import threading
 import time
 import os
 import signal
-import json
+import yaml
 import sys
 from pathlib import Path
 import psutil
@@ -377,11 +377,11 @@ class FileOrganizerApp:
             # Production mode - find the actual organized folder
             try:
                 # Try to read config to find output_base
-                config_path = self.script_dir / "organizer_config.json"
+                config_path = self.script_dir / "organizer_config.yaml"
                 if config_path.exists():
                     with open(config_path, 'r') as f:
-                        config = json.load(f)
-                        output_base = config.get('output_base', '')
+                        config = yaml.safe_load(f)
+                        output_base = config.get('output_base', '') if config else ''
                         if output_base:
                             organized_path = Path(output_base)
             except:
