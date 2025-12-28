@@ -1337,7 +1337,7 @@ class BackgroundBackup:
 class EnhancedFileOrganizer:
     """Enhanced file organizer with full production features."""
     
-    def __init__(self, config_file: str = "organizer_config.yaml", test_mode: bool = False):
+    def __init__(self, config_file: str = "config.yaml", test_mode: bool = False):
         self.config_file = config_file
         self.test_mode = test_mode
         self.config = self._load_config()
@@ -1355,7 +1355,7 @@ class EnhancedFileOrganizer:
                         f"  1. Stop the file organizer\n"
                         f"  2. Review the contents of {main_drive_dir} to see what was incorrectly copied\n"
                         f"  3. Delete the directory: rm -rf {main_drive_dir}\n"
-                        f"  4. Check your organizer_config.yaml to ensure all drive placeholders are properly resolved")
+                        f"  4. Check your config.yaml to ensure all drive placeholders are properly resolved")
             self.logger.error(error_msg)
             if not test_mode:
                 print("\n" + "=" * 70)
@@ -1381,7 +1381,7 @@ class EnhancedFileOrganizer:
                 print("This teaches you the proper setup for production mode.")
                 
                 # Check if template exists
-                template_file = "organizer_config.template.yaml"
+                template_file = "config_template.yaml"
                 if os.path.exists(template_file):
                     print("\nTo get started:")
                     print(f"  1. Copy the template:  cp {template_file} {self.config_file}")
@@ -1467,7 +1467,7 @@ class EnhancedFileOrganizer:
             print("\nA valid configuration file is required, even in test mode.")
             
             # Check if template exists
-            template_file = "organizer_config.template.yaml"
+            template_file = "config_template.yaml"
             if os.path.exists(template_file):
                 print("\nTo get started:")
                 print(f"  1. Copy the template:  cp {template_file} {self.config_file}")
@@ -1566,7 +1566,7 @@ class EnhancedFileOrganizer:
                 print("\nTo fix this:")
                 print("  1. Check for syntax errors (missing colons, incorrect indentation, etc.)")
                 print("  2. Use a YAML validator: https://www.yamllint.com/")
-                print("  3. Or start fresh: cp organizer_config.template.yaml " + self.config_file)
+                print("  3. Or start fresh: cp config_template.yaml " + self.config_file)
             
             print("\n" + "=" * 70 + "\n")
             sys.exit(1)
@@ -1950,7 +1950,7 @@ class EnhancedFileOrganizer:
                 print()
             
             print("Please fix the configuration file and try again.")
-            print("See organizer_config.template.yaml for a valid example.")
+            print("See config_template.yaml for a valid example.")
             print("=" * 70 + "\n")
             
             if errors:
@@ -1969,7 +1969,7 @@ class EnhancedFileOrganizer:
             print("=" * 70)
             print(f"\nConfiguration file: {self.config_file}")
             print("Please add a 'drives' section to your config file.")
-            print("\nSee organizer_config.template.yaml for an example.")
+            print("\nSee config_template.yaml for an example.")
             print("=" * 70 + "\n")
             sys.exit(1)
         
@@ -3506,7 +3506,7 @@ def validate_config_file(config_file: str) -> bool:
         print(f"\nThe file '{config_file}' does not exist.")
         print("\nA valid configuration file is required, even in test mode.")
         
-        template_file = "organizer_config.template.yaml"
+        template_file = "config_template.yaml"
         if os.path.exists(template_file):
             print("\nTo get started:")
             print(f"  1. Copy the template:  cp {template_file} {config_file}")
@@ -3612,7 +3612,7 @@ def validate_config_file(config_file: str) -> bool:
             print("\nTo fix this:")
             print("  1. Check for syntax errors (missing colons, incorrect indentation, etc.)")
             print("  2. Use a YAML validator: https://www.yamllint.com/")
-            print("  3. Or start fresh: cp organizer_config.template.yaml " + config_file)
+            print("  3. Or start fresh: cp config_template.yaml " + config_file)
         
         print("\n" + "=" * 70 + "\n")
         sys.exit(1)
@@ -3635,7 +3635,7 @@ def main():
     parser.add_argument('-R', '--REAL', action='store_true',
                        help='Run in PRODUCTION MODE on your entire file system (default: TEST MODE)')
     parser.add_argument('--config', default=None,
-                       help='Configuration file path (default: auto-detect based on mode)')
+                       help='Configuration file path (default: config.yaml)')
     parser.add_argument('--scan-once', action='store_true',
                        help='Run a single organization cycle instead of daemon mode')
     parser.add_argument('--sync-only', action='store_true',
@@ -3657,7 +3657,7 @@ def main():
     
     # If --validate-config, validate and exit early (skip other checks)
     if args.validate_config:
-        config_file = args.config or 'organizer_config.yaml'
+        config_file = args.config or 'config.yaml'
         validate_config_file(config_file)
         print("\n✓ Configuration file is valid!")
         sys.exit(0)
@@ -3714,7 +3714,7 @@ def main():
         print("=" * 70)
         print("PRODUCTION MODE - Operating on your entire file system")
         print("=" * 70)
-        config_file = args.config or 'organizer_config.yaml'
+        config_file = args.config or 'config.yaml'
     else:
         if not args.internal_daemon:
             print("=" * 70)
@@ -3729,8 +3729,8 @@ def main():
             create_test_environment()
             print()
         
-        # In test mode, still require organizer_config.yaml (even though test mode doesn't use it)
-        config_file = args.config or 'organizer_config.yaml'
+        # In test mode, still require config.yaml (even though test mode doesn't use it)
+        config_file = args.config or 'config.yaml'
     
     # Validate config file BEFORE daemonizing (so errors show immediately)
     # This function will exit with code 1 if validation fails

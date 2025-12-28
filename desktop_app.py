@@ -164,9 +164,11 @@ class FileOrganizerApp:
         log_frame = ttk.Frame(control_frame)
         log_frame.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(10, 0))
         
-        ttk.Label(log_frame, text="Log File:").grid(row=0, column=0, sticky=tk.W)
+        log_label = ttk.Label(log_frame, text="Log File:")
+        log_label.grid(row=0, column=0, sticky=tk.W)
+        log_label.config(foreground="white")
         self.log_path = Path.home() / ".file_organizer.log"
-        self.log_path_label = ttk.Label(log_frame, text=str(self.log_path), foreground="blue")
+        self.log_path_label = ttk.Label(log_frame, text=str(self.log_path), foreground="white")
         self.log_path_label.grid(row=0, column=1, sticky=tk.W, padx=(5, 0))
     
     def setup_log_viewer(self, parent):
@@ -238,9 +240,20 @@ class FileOrganizerApp:
         has_running, processes = self.check_for_running_processes()
         
         if has_running:
+            # Something is running - check if it's REAL mode or TEST mode
+            is_real_mode = False
+            for proc_info in processes:
+                cmdline = proc_info.get('cmdline', '')
+                if '--REAL' in cmdline or '-R' in cmdline:
+                    is_real_mode = True
+                    break
+            
             # Something is running
             self.organizer_running = True
-            self.status_label.config(text="Running", fg="lime")
+            if is_real_mode:
+                self.status_label.config(text="Running (REAL)", fg="lime")
+            else:
+                self.status_label.config(text="Running (TEST)", fg="lime")
             
             # Update button states
             self.start_button.config(state="disabled")
@@ -296,12 +309,19 @@ class FileOrganizerApp:
     
     def stop_organizer(self):
         """Stop the organizer"""
-        success, stdout, stderr = self.run_command(f"bash {self.manage_script} stop")
+        # Use absolute path and ensure we wait for completion
+        manage_script_path = str(self.manage_script.absolute())
+        command = f"bash '{manage_script_path}' stop"
+        success, stdout, stderr = self.run_command(command, wait=True)
         
         if success:
             self.update_status()
         else:
-            messagebox.showerror("Error", f"Failed to stop organizer:\n{stderr}")
+            # Don't show messagebox when called from on_closing (it would block)
+            if hasattr(self, 'root') and self.root.winfo_exists():
+                messagebox.showerror("Error", f"Failed to stop organizer:\n{stderr}")
+            else:
+                print(f"Failed to stop organizer: {stderr}")
     
     def restart_organizer(self):
         """Restart the organizer"""
@@ -377,7 +397,7 @@ class FileOrganizerApp:
             # Production mode - find the actual organized folder
             try:
                 # Try to read config to find output_base
-                config_path = self.script_dir / "organizer_config.yaml"
+                config_path = self.script_dir / "config.yaml"
                 if config_path.exists():
                     with open(config_path, 'r') as f:
                         config = yaml.safe_load(f)
@@ -483,21 +503,70 @@ class FileOrganizerApp:
         return len(processes) > 0, processes
     
     def exit_app(self):
-        """Exit the application - kill non-daemon processes"""
-        print("Exiting File Organizer GUI...")
-        
-        # Kill any non-daemon processes
-        self.kill_non_daemon_processes()
-        
-        # Close the window
-        self.root.destroy()
+        """Exit the application - calls on_closing to stop daemon"""
+        # Just call on_closing which handles everything
+        self.on_closing()
     
     def on_closing(self):
-        """Handle window closing - kill non-daemon processes"""
+        """Handle window closing - stop file_organizer.py if running"""
         print("Closing File Organizer GUI...")
         
-        # Kill any non-daemon processes
-        self.kill_non_daemon_processes()
+        # Always try to stop file_organizer.py (daemon or non-daemon)
+        # Execute the stop command directly to ensure it runs
+        print("Stopping file_organizer.py...")
+        manage_script_path = str(self.manage_script.absolute())
+        stop_command = ["bash", manage_script_path, "stop"]
+        
+        try:
+            # Run the stop command directly (not through shell)
+            result = subprocess.run(
+                stop_command,
+                cwd=str(self.script_dir.absolute()),
+                capture_output=True,
+                text=True,
+                timeout=15
+            )
+            print(f"Stop command exit code: {result.returncode}")
+            if result.stdout:
+                print(f"Stop output: {result.stdout}")
+            if result.stderr:
+                print(f"Stop errors: {result.stderr}")
+        except subprocess.TimeoutExpired:
+            print("Warning: Stop command timed out")
+        except Exception as e:
+            print(f"Error running stop command: {e}")
+        
+        # Give it time to stop (the stop script has sleeps built in)
+        time.sleep(2)
+        
+        # Double-check and kill any remaining processes (backup)
+        has_running, processes = self.check_for_running_processes()
+        if has_running:
+            print(f"Found {len(processes)} remaining process(es), killing them directly...")
+            for proc_info in processes:
+                try:
+                    pid = proc_info['pid']
+                    print(f"  Sending SIGTERM to PID {pid}...")
+                    os.kill(pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    print(f"  PID {pid} already gone")
+                except Exception as e:
+                    print(f"  Could not kill PID {pid}: {e}")
+            
+            # Wait a bit, then force kill if still running
+            time.sleep(1)
+            has_running, processes = self.check_for_running_processes()
+            if has_running:
+                print(f"Force killing {len(processes)} remaining process(es)...")
+                for proc_info in processes:
+                    try:
+                        pid = proc_info['pid']
+                        print(f"  Force killing PID {pid}...")
+                        os.kill(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        print(f"  PID {pid} already gone")
+                    except Exception as e:
+                        print(f"  Could not force kill PID {pid}: {e}")
         
         # Close the window
         self.root.destroy()

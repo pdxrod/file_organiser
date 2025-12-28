@@ -1,4 +1,4 @@
-# Template configuration file - Copy to organizer_config.yaml and customize
+# Template configuration file - Copy to config.yaml and customize
 
 drives:
   # Define drive shortcuts here. You can use these names in sync_pairs and source_folders below. If a drive is not available, the program will skip it gracefully.

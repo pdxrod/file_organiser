@@ -5,7 +5,7 @@
 > This tool moves, copies, synchronizes, and can DELETE files across your system.
 > - Always keep current backups
 > - Start in **test mode** and review logs before using real data
-> - Review your `organizer_config.yaml` carefully
+> - Review your `config.yaml` carefully
 > - Folder sync and deduplication can delete real files when misconfigured
 > - No warranty is provided - see LICENSE
 
@@ -71,7 +71,7 @@ There are two primary ways to use it:
 - **How to run:**
   - `python file_organizer.py --REAL --dedupe-only`
 - **What it does (current implementation):**
-  - Looks at the `source_folders` list in `organizer_config.yaml`.
+  - Looks at the `source_folders` list in `config.yaml`.
   - Recursively scans those directories for **real files**.
   - Groups files by **content hash** (MD5) and removes duplicates, keeping only the newest copy in each group.
 - **Important:**
@@ -90,7 +90,7 @@ The README text in earlier versions said dedupe only touched `~/organized` soft 
 
 ### Drives and Placeholders
 
-In `organizer_config.yaml` you can define **drive shortcuts**:
+In `config.yaml` you can define **drive shortcuts**:
 
 ```yaml
 drives:
@@ -169,7 +169,7 @@ The organizer writes soft links into `output_base` (default `~/organized` in pro
 
 ## Configuration Summary
 
-Core keys in `organizer_config.yaml`:
+Core keys in `config.yaml`:
 
 - **`drives`**: Drive shortcuts, can be nested and used in other paths.
 - **`sync_pairs`**: Folder pairs to keep in sync (bidirectional).
@@ -272,7 +272,7 @@ Options:
   --create-test        Create test environment under ./test and exit
   --sync-only          Only synchronize folders (production mode)
   --dedupe-only        Only run deduplication (production mode)
-  --config PATH        Use a custom config file (default: organizer_config.yaml)
+  --config PATH        Use a custom config file (default: config.yaml)
 ```
 
 Typical flows:
@@ -302,7 +302,7 @@ Before running in production mode with real files:
 
 - **Backups:** You have current backups of anything important.
 - **Tested:** You have run at least one full cycle in test mode and reviewed `test/organized/`.
-- **Config reviewed:** `organizer_config.yaml` is valid YAML (no tabs, proper indentation) and `drives`, `sync_pairs`, and (if used) `source_folders` point only to locations you are comfortable modifying.
+- **Config reviewed:** `config.yaml` is valid YAML (no tabs, proper indentation) and `drives`, `sync_pairs`, and (if used) `source_folders` point only to locations you are comfortable modifying.
 - **Dedup clarity:** You understand that current dedup logic deletes **real files under `source_folders`**, not just soft links.
 - **Logs monitored:** You know how to watch `~/.file_organizer.log` and stop the process if something looks wrong.
 

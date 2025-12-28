@@ -15,8 +15,8 @@ import shutil
 from pathlib import Path
 
 def load_config():
-    """Load organizer_config.yaml to get softlink_folder_patterns."""
-    config_path = Path(__file__).parent / 'organizer_config.yaml'
+    """Load config.yaml to get softlink_folder_patterns."""
+    config_path = Path(__file__).parent / 'config.yaml'
     if not config_path.exists():
         print(f"Warning: {config_path} not found, using default patterns")
         return ['.git', '.hg', '.svn', '.cvs', '__pycache__', '.pytest_cache', 
