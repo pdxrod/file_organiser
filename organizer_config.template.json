@@ -115,7 +115,7 @@
         "enabled": true,
         "min_keyword_frequency": 10,
         "min_category_size": 5,
-        "max_categories": 50,
+        "max_categories": 150,
         "min_word_length": 5,
         "stop_words_enabled": true,
         "use_clip": false,

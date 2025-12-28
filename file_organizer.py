@@ -491,29 +491,52 @@ class FolderSynchronizer:
         return removed_count
     
     def _matches_pattern(self, path: Path, patterns: List[str]) -> bool:
-        """Check if path matches any pattern in the list (supports wildcards)."""
+        """
+        Check if path matches any pattern in the list (supports wildcards).
+        For folder patterns, only matches against the folder NAME, not the full path.
+        This prevents "env" from matching "environments".
+        """
         import fnmatch
         
-        path_str = str(path)
-        path_parts = path.parts
+        # Get just the folder/file name (last component of the path)
+        folder_name = path.name
         
         for pattern in patterns:
             # Check if pattern contains wildcards
             if '*' in pattern or '?' in pattern:
                 # Use fnmatch for wildcard patterns
-                # Check individual path components (directory/file names)
-                for part in path_parts:
-                    if fnmatch.fnmatch(part, pattern):
-                        return True
-                # Also check if pattern matches anywhere in the full path
-                if fnmatch.fnmatch(path_str, f"*{pattern}*"):
+                # Only check the folder name (exact match on the component name)
+                if fnmatch.fnmatch(folder_name, pattern):
                     return True
             else:
-                # Simple substring match for patterns without wildcards
-                if pattern in path_str:
+                # Exact match on folder name (not substring)
+                # This prevents "env" from matching "environments"
+                if folder_name == pattern:
                     return True
         
         return False
+    
+    def _should_process_excluded_folders(self, directory: Path) -> bool:
+        """
+        Determine if excluded folders should be processed in this directory.
+        Returns False for cloud drives and external volumes.
+        """
+        try:
+            dir_str = str(directory.resolve())
+            
+            # Don't process cloud drives
+            if '/ProtonDrive' in dir_str or '/GoogleDrive' in dir_str:
+                return False
+            
+            # Don't process external volumes (mounted at /Volumes/)
+            if dir_str.startswith('/Volumes/'):
+                return False
+            
+            # Process local drives (under /Users, etc.)
+            return True
+        except Exception:
+            # If we can't determine, err on the side of caution and don't process
+            return False
     
     def _process_excluded_folders_in_directory(self, directory: Path, organised_base: Path, max_depth: int = 20) -> None:
         """
@@ -594,17 +617,24 @@ class FolderSynchronizer:
                 # Still replace with link if not already a link
                 if not folder.is_symlink():
                     # Remove original folder (but keep contents safe in backup)
-                    if folder.exists():
-                        folder.unlink()  # Remove original folder
+                    if folder.exists() and folder.is_dir():
+                        try:
+                            shutil.rmtree(folder)  # Use rmtree for directories
+                        except Exception as e:
+                            self.logger.warning(f"Could not remove folder {folder}: {e}")
+                            return
                     folder.symlink_to(backup_path)
                     self.logger.info(f"Replaced {folder} with soft link to {backup_path}")
                 elif folder.is_symlink():
                     # Check if link points to correct location
-                    current_target = folder.readlink()
-                    if current_target != backup_path:
-                        folder.unlink()
-                        folder.symlink_to(backup_path)
-                        self.logger.info(f"Updated {folder} soft link to point to {backup_path}")
+                    try:
+                        current_target = folder.readlink()
+                        if current_target != backup_path:
+                            folder.unlink()
+                            folder.symlink_to(backup_path)
+                            self.logger.info(f"Updated {folder} soft link to point to {backup_path}")
+                    except Exception as e:
+                        self.logger.warning(f"Could not read/update symlink {folder}: {e}")
                 return
             
             # Copy folder contents to backup location
@@ -630,10 +660,26 @@ class FolderSynchronizer:
                     return
             
             # Remove original and create soft link
-            if folder.exists() and not folder.is_symlink():
-                folder.unlink()  # Remove original folder
-            folder.symlink_to(backup_path)
-            self.logger.info(f"Replaced {folder} with soft link to {backup_path}")
+            if folder.exists() and not folder.is_symlink() and folder.is_dir():
+                try:
+                    shutil.rmtree(folder)  # Use rmtree for directories, not unlink
+                except Exception as e:
+                    self.logger.error(f"Could not remove folder {folder} before creating symlink: {e}")
+                    return
+            
+            # Create the symlink
+            try:
+                folder.symlink_to(backup_path)
+                self.logger.info(f"Replaced {folder} with soft link to {backup_path}")
+            except FileExistsError:
+                # Folder already exists (might be a broken symlink or something)
+                try:
+                    if folder.is_symlink():
+                        folder.unlink()
+                    folder.symlink_to(backup_path)
+                    self.logger.info(f"Replaced existing {folder} with soft link to {backup_path}")
+                except Exception as e:
+                    self.logger.error(f"Could not create symlink {folder} -> {backup_path}: {e}")
             
         except Exception as e:
             self.logger.error(f"Failed to backup and link folder {folder}: {e}")
@@ -892,11 +938,16 @@ class FolderSynchronizer:
         empty_patterns = self.config.get('empty_folder_patterns', [])
         all_exclude_patterns = exclude_patterns + softlink_patterns + empty_patterns
         
-        # Process excluded folders before syncing
+        # Process excluded folders before syncing (only on local drives, not cloud/external)
         # This backs up softlink_folder_patterns to ~/organised and empties empty_folder_patterns
         organised_base = Path.home() / 'organised'
-        self._process_excluded_folders_in_directory(source, organised_base)
-        self._process_excluded_folders_in_directory(target, organised_base)
+        
+        # Only process excluded folders on local/main drive, not on cloud or external drives
+        # Cloud/external drives shouldn't have their folders backed up to ~/organised
+        if self._should_process_excluded_folders(source):
+            self._process_excluded_folders_in_directory(source, organised_base)
+        if self._should_process_excluded_folders(target):
+            self._process_excluded_folders_in_directory(target, organised_base)
         
         # For bidirectional sync, use manual Python sync (rsync is one-way)
         if sync_mode == 'bidirectional':
@@ -2635,6 +2686,11 @@ class EnhancedFileOrganizer:
     def process_file(self, file_path: Path) -> None:
         """Process a single file with dynamic content analysis."""
         if str(file_path) in self.processed_files:
+            return
+        
+        # Skip macOS metadata files (files starting with ._)
+        # These are resource fork/metadata files that macOS creates
+        if file_path.name.startswith('._'):
             return
         
         if self.should_exclude_path(file_path):
