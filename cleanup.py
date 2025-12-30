@@ -15,21 +15,32 @@ import shutil
 from pathlib import Path
 
 def load_config():
-    """Load config.yaml to get softlink_folder_patterns."""
+    """Load config.yaml to get softlink_folder_patterns and softlink_backup_base."""
     config_path = Path(__file__).parent / 'config.yaml'
     if not config_path.exists():
-        print(f"Warning: {config_path} not found, using default patterns")
-        return ['.git', '.hg', '.svn', '.cvs', '__pycache__', '.pytest_cache', 
-                '.mypy_cache', '.tox', '.venv', 'venv', 'env']
+        print(f"Warning: {config_path} not found, using defaults")
+        return {
+            'softlink_folder_patterns': ['.git', '.hg', '.svn', '.cvs', '__pycache__', '.pytest_cache', 
+                                         '.mypy_cache', '.tox', '.venv', 'venv', 'env'],
+            'softlink_backup_base': '~/organised'
+        }
     
     try:
         with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
-        return config.get('softlink_folder_patterns', []) if config else []
+        if not config:
+            config = {}
+        return {
+            'softlink_folder_patterns': config.get('softlink_folder_patterns', []),
+            'softlink_backup_base': config.get('softlink_backup_base', '~/organised')
+        }
     except Exception as e:
-        print(f"Error loading config: {e}, using default patterns")
-        return ['.git', '.hg', '.svn', '.cvs', '__pycache__', '.pytest_cache', 
-                '.mypy_cache', '.tox', '.venv', 'venv', 'env']
+        print(f"Error loading config: {e}, using defaults")
+        return {
+            'softlink_folder_patterns': ['.git', '.hg', '.svn', '.cvs', '__pycache__', '.pytest_cache', 
+                                         '.mypy_cache', '.tox', '.venv', 'venv', 'env'],
+            'softlink_backup_base': '~/organised'
+        }
 
 def folder_matches_pattern(folder_name: str, patterns: list) -> bool:
     """Check if folder name exactly matches any pattern (no substring matching)."""
@@ -73,7 +84,7 @@ def restore_incorrectly_linked_folders(organised_base: Path, softlink_patterns: 
     Find and restore incorrectly softlinked folders.
     
     A folder is incorrectly linked if:
-    - It's a symlink pointing to ~/organised
+    - It's a symlink pointing to softlink_backup_base
     - Its name doesn't match any pattern in softlink_folder_patterns
     
     Returns count of restored folders.
@@ -137,11 +148,19 @@ def restore_incorrectly_linked_folders(organised_base: Path, softlink_patterns: 
 
 def main():
     organized_path = Path.home() / 'organized'
-    organised_base = Path.home() / 'organised'
     
-    # Load valid patterns from config
-    softlink_patterns = load_config()
+    # Load config
+    config = load_config()
+    softlink_patterns = config['softlink_folder_patterns']
+    backup_base_str = config['softlink_backup_base']
+    
+    # Expand ~ to home directory
+    if backup_base_str.startswith('~'):
+        backup_base_str = str(Path.home()) + backup_base_str[1:]
+    organised_base = Path(backup_base_str)
+    
     print(f"Valid softlink patterns: {softlink_patterns}")
+    print(f"Softlink backup base: {organised_base}")
     
     print("\n" + "="*70)
     print("File Organizer Cleanup Script")

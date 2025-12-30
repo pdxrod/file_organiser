@@ -397,6 +397,14 @@ class FolderSynchronizer:
         self.logger = logger
         self.config = config
     
+    def _get_organised_base(self) -> Path:
+        """Get the organised_base path from config, with default fallback."""
+        backup_base = self.config.get('softlink_backup_base', '~/organised')
+        # Expand ~ to home directory
+        if backup_base.startswith('~'):
+            backup_base = str(Path.home()) + backup_base[1:]
+        return Path(backup_base)
+    
     def _shorten_path(self, path: Path, base_paths: List[Path] = None, include_filename: bool = True) -> str:
         """
         Shorten a path for compact display.
@@ -566,7 +574,7 @@ class FolderSynchronizer:
     def _process_excluded_folders_in_directory(self, directory: Path, organised_base: Path, max_depth: int = 20) -> None:
         """
         Recursively process excluded folders in a directory:
-        - softlink_folder_patterns: Backup to ~/organised and replace with soft links
+        - softlink_folder_patterns: Backup to softlink_backup_base and replace with soft links
         - empty_folder_patterns: Delete contents, leave empty folders
         
         Processes directories recursively to find all excluded folders.
@@ -581,7 +589,7 @@ class FolderSynchronizer:
         if not directory.exists() or not directory.is_dir():
             return
         
-        # Skip if this directory itself is in ~/organised
+        # Skip if this directory itself is in softlink_backup_base
         try:
             if directory.is_relative_to(organised_base):
                 return
@@ -613,11 +621,11 @@ class FolderSynchronizer:
     
     def _backup_and_link_folder(self, folder: Path, organised_base: Path) -> None:
         """
-        Backup a folder to ~/organised maintaining full source path structure,
+        Backup a folder to softlink_backup_base maintaining full source path structure,
         then replace the original with a soft link.
         
         Example: /Users/yourname/dev/bash/.git 
-        -> Backup to: /Users/yourname/organised/Users/yourname/dev/bash/.git
+        -> Backup to: {softlink_backup_base}/Users/yourname/dev/bash/.git
         -> Replace with: /Users/yourname/dev/bash/.git (soft link)
         """
         try:
@@ -626,7 +634,7 @@ class FolderSynchronizer:
                 return
             
             # Calculate backup path maintaining full source structure
-            # e.g., /Users/yourname/dev/bash/.git -> ~/organised/Users/yourname/dev/bash/.git
+            # e.g., /Users/yourname/dev/bash/.git -> {softlink_backup_base}/Users/yourname/dev/bash/.git
             # Use absolute path to preserve full structure
             folder_abs = folder.resolve()
             # Remove leading slash and join with organised_base
@@ -738,15 +746,15 @@ class FolderSynchronizer:
         
         Supports wildcard patterns (e.g., '.tmp*', '*.pyc') and simple substring matching.
         Checks both the full path and individual path components (directory/file names).
-        Always excludes ~/organised to prevent copying the backup location.
+        Always excludes softlink_backup_base to prevent copying the backup location.
         """
         import fnmatch
         
         path_str = str(path)
         path_parts = path.parts
         
-        # CRITICAL: Always exclude ~/organised (where excluded folders are backed up)
-        organised_path = Path.home() / 'organised'
+        # CRITICAL: Always exclude softlink_backup_base (where excluded folders are backed up)
+        organised_path = self._get_organised_base()
         try:
             if path.is_relative_to(organised_path) or organised_path in path.parents:
                 return True
@@ -964,11 +972,11 @@ class FolderSynchronizer:
         all_exclude_patterns = exclude_patterns + softlink_patterns + empty_patterns
         
         # Process excluded folders before syncing (only on local drives, not cloud/external)
-        # This backs up softlink_folder_patterns to ~/organised and empties empty_folder_patterns
-        organised_base = Path.home() / 'organised'
+        # This backs up softlink_folder_patterns to softlink_backup_base and empties empty_folder_patterns
+        organised_base = self._get_organised_base()
         
         # Only process excluded folders on local/main drive, not on cloud or external drives
-        # Cloud/external drives shouldn't have their folders backed up to ~/organised
+        # Cloud/external drives shouldn't have their folders backed up to softlink_backup_base
         if self._should_process_excluded_folders(source):
             self._process_excluded_folders_in_directory(source, organised_base)
         if self._should_process_excluded_folders(target):
@@ -1455,6 +1463,14 @@ class EnhancedFileOrganizer:
         
         # Track processed files
         self.processed_files = set()
+    
+    def _get_organised_base(self) -> Path:
+        """Get the organised_base path from config, with default fallback."""
+        backup_base = self.config.get('softlink_backup_base', '~/organised')
+        # Expand ~ to home directory
+        if backup_base.startswith('~'):
+            backup_base = str(Path.home()) + backup_base[1:]
+        return Path(backup_base)
         
     def _load_config(self) -> Dict:
         """Load configuration from YAML file."""
@@ -2252,8 +2268,8 @@ class EnhancedFileOrganizer:
         """Check if path should be excluded from processing."""
         path_str = str(path)
         
-        # CRITICAL: Always exclude ~/organised (where excluded folders are backed up)
-        organised_path = Path.home() / 'organised'
+        # CRITICAL: Always exclude softlink_backup_base (where excluded folders are backed up)
+        organised_path = self._get_organised_base()
         try:
             if path.is_relative_to(organised_path) or organised_path in path.parents:
                 return True
@@ -3181,6 +3197,10 @@ class EnhancedFileOrganizer:
     
     def run_full_cycle(self) -> None:
         """Run a complete organization cycle with dynamic content discovery."""
+        # Ensure progress is initialized (safety check)
+        if not hasattr(self, 'progress') or self.progress is None:
+            self.progress = self._load_progress()
+        
         self.logger.info("=" * 80)
         self.logger.info("Starting full organization cycle")
         self.logger.info("=" * 80)
