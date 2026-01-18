@@ -2198,6 +2198,22 @@ class EnhancedFileOrganizer:
     
     def _load_progress(self) -> Dict:
         """Load progress from previous run if it exists."""
+        if self.test_mode:
+            if self.progress_file.exists():
+                try:
+                    self.progress_file.unlink()
+                    self.logger.info("Cleared stale test-mode progress file")
+                except Exception as e:
+                    self.logger.warning(f"Could not clear test progress file: {e}")
+            return {
+                'timestamp': time.time(),
+                'current_step': 'scan',
+                'scan_folders_completed': [],
+                'sync_pairs_completed': [],
+                'deduplication_completed': False,
+                'backup_completed': False
+            }
+
         if self.progress_file.exists():
             try:
                 with open(self.progress_file, 'r') as f:
