@@ -141,7 +141,7 @@ class FileOrganizerApp:
         ttk.Radiobutton(mode_frame, text="Test", variable=self.mode_var, value="test").grid(row=0, column=0, sticky=tk.W, padx=(0, 10))
         ttk.Radiobutton(mode_frame, text="Real Background Daemon", variable=self.mode_var, value="daemon").grid(row=0, column=1, sticky=tk.W, padx=(0, 10))
         ttk.Radiobutton(mode_frame, text="Real - Scan Once", variable=self.mode_var, value="scan_once").grid(row=1, column=0, sticky=tk.W, padx=(0, 10))
-        ttk.Radiobutton(mode_frame, text="Remove duplicate links in the \"organized\" folder", variable=self.mode_var, value="dedupe").grid(row=1, column=1, sticky=tk.W, padx=(0, 10))
+        ttk.Radiobutton(mode_frame, text="Remove duplicate links", variable=self.mode_var, value="dedupe").grid(row=1, column=1, sticky=tk.W, padx=(0, 10))
         ttk.Radiobutton(mode_frame, text="Sync Only", variable=self.mode_var, value="sync").grid(row=2, column=0, sticky=tk.W, padx=(0, 10))
         
         # Action buttons (moved to left side, above status box)

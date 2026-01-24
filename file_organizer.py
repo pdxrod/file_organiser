@@ -814,6 +814,11 @@ class FolderSynchronizer:
             for extra in additional_args:
                 if isinstance(extra, str) and extra.strip():
                     cmd.append(extra.strip())
+
+            # Disable mmap on macOS or when explicitly configured to avoid
+            # "mmap: Operation canceled" errors during reads.
+            if self.config.get('rsync_disable_mmap', False):
+                cmd.append('--no-mmap')
             
             # Add exclusions
             for exclude in sync_excludes:
@@ -831,6 +836,12 @@ class FolderSynchronizer:
             
             try:
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_seconds)
+                if result.returncode != 0 and '--no-mmap' in cmd:
+                    stderr_lower = (result.stderr or '').lower()
+                    if 'no-mmap' in stderr_lower and 'unknown option' in stderr_lower:
+                        self.logger.warning("rsync does not support --no-mmap; retrying without it")
+                        cmd = [arg for arg in cmd if arg != '--no-mmap']
+                        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_seconds)
             except subprocess.TimeoutExpired:
                 self.logger.error(f"rsync timed out after {timeout_minutes} minutes")
                 self.logger.warning(f"This sync is taking too long - skipping to prevent hanging")
@@ -1643,6 +1654,48 @@ class EnhancedFileOrganizer:
                 # Check if one is a subdirectory of the other (potential circular reference)
                 if path1_resolved.startswith(path2_resolved + '/') or path2_resolved.startswith(path1_resolved + '/'):
                     warnings.append(f"sync_pairs[{i}]: potential circular reference - folders are nested")
+
+        # Check for circular references in one_way_pairs
+        if 'one_way_pairs' in config and isinstance(config['one_way_pairs'], list):
+            drives = config.get('drives', {})
+            for i, pair in enumerate(config['one_way_pairs']):
+                if not isinstance(pair, dict):
+                    continue
+                
+                # Support both new format (folders) and old format (source/target)
+                if 'folders' in pair:
+                    # New format
+                    folders = pair['folders']
+                    if not isinstance(folders, list) or len(folders) != 2:
+                        errors.append(f"one_way_pairs[{i}]: 'folders' must be a list of exactly 2 paths")
+                        continue
+                    path1 = folders[0]
+                    path2 = folders[1]
+                elif 'source' in pair and 'target' in pair:
+                    # Old format (backward compatibility)
+                    path1 = pair['source']
+                    path2 = pair['target']
+                else:
+                    # Comment-only entry, skip
+                    continue
+                
+                # Resolve drive placeholders first, then expand and resolve paths
+                try:
+                    path1_resolved_str = self._resolve_path_with_drives(path1, drives)
+                    path2_resolved_str = self._resolve_path_with_drives(path2, drives)
+                    path1_resolved = str(Path(path1_resolved_str).expanduser().resolve())
+                    path2_resolved = str(Path(path2_resolved_str).expanduser().resolve())
+                except Exception as e:
+                    errors.append(f"one_way_pairs[{i}]: Invalid path - {e}")
+                    continue
+                
+                # Check if paths are the same
+                if path1_resolved == path2_resolved:
+                    errors.append(f"one_way_pairs[{i}]: Folders are identical: '{path1}' → '{path1_resolved}'")
+                
+                # Check if one is a subdirectory of the other (potential circular reference)
+                if path1_resolved.startswith(path2_resolved + '/') or path2_resolved.startswith(path1_resolved + '/'):
+                    warnings.append(f"one_way_pairs[{i}]: potential circular reference - folders are nested")
         
         # Check for output_base conflicts (if output_base exists)
         if 'output_base' in config:
@@ -1667,6 +1720,33 @@ class EnhancedFileOrganizer:
                                 target_resolved = str(Path(pair['target']).expanduser().resolve())
                                 if output_resolved.startswith(source_resolved + '/') or output_resolved.startswith(target_resolved + '/'):
                                     warnings.append(f"output_base '{config['output_base']}' is inside sync_pairs[{i}] - this may cause issues")
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+        
+        # Check if output_base is inside any one-way pair folders
+        if 'output_base' in config:
+            try:
+                output_resolved = str(Path(config['output_base']).expanduser().resolve())
+                if 'one_way_pairs' in config and isinstance(config['one_way_pairs'], list):
+                    for i, pair in enumerate(config['one_way_pairs']):
+                        if not isinstance(pair, dict):
+                            continue
+                        try:
+                            if 'folders' in pair:
+                                folders = pair['folders']
+                                if isinstance(folders, list) and len(folders) == 2:
+                                    path1_resolved = str(Path(folders[0]).expanduser().resolve())
+                                    path2_resolved = str(Path(folders[1]).expanduser().resolve())
+                                    if output_resolved.startswith(path1_resolved + '/') or output_resolved.startswith(path2_resolved + '/'):
+                                        warnings.append(f"output_base '{config['output_base']}' is inside one_way_pairs[{i}] - this may cause issues")
+                            elif 'source' in pair and 'target' in pair:
+                                # Old format
+                                source_resolved = str(Path(pair['source']).expanduser().resolve())
+                                target_resolved = str(Path(pair['target']).expanduser().resolve())
+                                if output_resolved.startswith(source_resolved + '/') or output_resolved.startswith(target_resolved + '/'):
+                                    warnings.append(f"output_base '{config['output_base']}' is inside one_way_pairs[{i}] - this may cause issues")
                         except Exception:
                             pass
             except Exception:
@@ -1711,6 +1791,7 @@ class EnhancedFileOrganizer:
     def _ensure_config_defaults(self):
         """Ensure all required config keys exist with sensible defaults."""
         # Essential operational settings
+        rsync_disable_mmap_default = sys.platform == 'darwin'
         defaults = {
             'flaky_volume_retries': 3,
             'retry_delay': 5,
@@ -1724,6 +1805,7 @@ class EnhancedFileOrganizer:
             'rsync_checksum_mode': 'timestamp',
             'rsync_size_only': False,
             'rsync_additional_args': [],
+            'rsync_disable_mmap': rsync_disable_mmap_default,
             'sync_chunk_subfolders': 30,
             'sync_chunk_concurrency': 1,
             'sync_timeout_minutes': 60,
@@ -1748,6 +1830,7 @@ class EnhancedFileOrganizer:
             'exclude_folders': [],
             'source_folders': [],
             'sync_pairs': [],
+            'one_way_pairs': [],
             'backup_directories': [],
             'drives': {},
             'output_base': '',
@@ -1900,8 +1983,18 @@ class EnhancedFileOrganizer:
         if 'sync_pairs' in self.config:
             if not isinstance(self.config['sync_pairs'], list):
                 errors.append("'sync_pairs' must be a list")
-            elif len(self.config['sync_pairs']) == 0 and self.config.get('enable_folder_sync', False):
-                warnings.append("'sync_pairs' is empty but 'enable_folder_sync' is true - no folders will be synced")
+        
+        # Validate one_way_pairs (optional one-way sync)
+        if 'one_way_pairs' in self.config:
+            if not isinstance(self.config['one_way_pairs'], list):
+                errors.append("'one_way_pairs' must be a list")
+        
+        # Warn if sync is enabled but no pairs are configured
+        if self.config.get('enable_folder_sync', False):
+            sync_pairs = self.config.get('sync_pairs', [])
+            one_way_pairs = self.config.get('one_way_pairs', [])
+            if len(sync_pairs) == 0 and len(one_way_pairs) == 0:
+                warnings.append("'sync_pairs' and 'one_way_pairs' are empty but 'enable_folder_sync' is true - no folders will be synced")
         
         # Legacy support: validate source_folders if present (for backward compatibility)
         if 'source_folders' in self.config:
@@ -1939,6 +2032,36 @@ class EnhancedFileOrganizer:
                     else:
                         # Must have either 'folders' or both 'source' and 'target'
                         errors.append(f"sync_pairs[{i}] must have either 'folders' (list of 2 paths) or 'source'/'target' (has: {list(pair.keys())})")
+        
+        # Validate one_way_pairs structure
+        if 'one_way_pairs' in self.config:
+            if not isinstance(self.config['one_way_pairs'], list):
+                errors.append("'one_way_pairs' must be a list")
+            else:
+                for i, pair in enumerate(self.config['one_way_pairs']):
+                    if not isinstance(pair, dict):
+                        errors.append(f"one_way_pairs[{i}] must be a dictionary")
+                        continue
+                    
+                    # Check if it's just a comment entry (only has 'comment' keys)
+                    keys = [k for k in pair.keys() if not k.startswith('comment')]
+                    if len(keys) == 0:
+                        # Just a comment, skip validation
+                        continue
+                    
+                    # Support both new format (folders) and old format (source/target)
+                    if 'folders' in pair:
+                        # New format: folders must be a list of exactly 2 paths
+                        if not isinstance(pair['folders'], list):
+                            errors.append(f"one_way_pairs[{i}]: 'folders' must be a list")
+                        elif len(pair['folders']) != 2:
+                            errors.append(f"one_way_pairs[{i}]: 'folders' must contain exactly 2 paths (has {len(pair['folders'])})")
+                    elif 'source' in pair and 'target' in pair:
+                        # Old format (backward compatibility) - both required
+                        pass
+                    else:
+                        # Must have either 'folders' or both 'source' and 'target'
+                        errors.append(f"one_way_pairs[{i}] must have either 'folders' (list of 2 paths) or 'source'/'target' (has: {list(pair.keys())})")
         
         # Validate ml_content_analysis if present
         if 'ml_content_analysis' in self.config:
@@ -2141,6 +2264,75 @@ class EnhancedFileOrganizer:
                                     self.logger.error(error_msg)
                                     raise ValueError(error_msg)
                         pair['target'] = resolved
+
+        # Resolve drive placeholders in one_way_pairs
+        if 'one_way_pairs' in self.config:
+            self.logger.info(f"Resolving drive placeholders in {len(self.config['one_way_pairs'])} one-way pairs...")
+            for i, pair in enumerate(self.config['one_way_pairs']):
+                if 'folders' in pair:
+                    # New format: resolve each folder in the list
+                    if isinstance(pair['folders'], list):
+                        resolved_folders = []
+                        for folder in pair['folders']:
+                            self.logger.debug(f"Resolving path '{folder}' in one_way_pairs[{i}]")
+                            resolved = self._resolve_path_with_drives(folder, drives)
+                            self.logger.debug(f"  Resolved to: '{resolved}'")
+                            
+                            # CRITICAL: Validate that resolution actually worked
+                            # The resolved path MUST be absolute and MUST NOT contain any drive placeholder strings
+                            if not resolved.startswith('/') and not resolved.startswith('~'):
+                                first_part = resolved.split('/')[0] if '/' in resolved else resolved
+                                if (first_part.isupper() and ('_' in first_part or first_part.endswith('_DRIVE'))) or \
+                                   first_part in ['MAIN_DRIVE', 'EXTERNAL_DRIVE', 'GOOGLE_DRIVE', 'PROTON_DRIVE', 'BACKUP_DRIVE']:
+                                    if first_part not in drives:
+                                        error_msg = (f"CRITICAL BUG: Path resolution failed for '{folder}' in one_way_pairs[{i}]. "
+                                                   f"Resolved to '{resolved}' which still contains unresolved drive placeholder '{first_part}'. "
+                                                   f"Available drives: {list(drives.keys())}. "
+                                                   f"This will create a literal '{first_part}' directory. "
+                                                   f"Please check your drives configuration.")
+                                        self.logger.error(error_msg)
+                                        raise ValueError(error_msg)
+                            
+                            # Additional check: resolved path must not contain "MAIN_DRIVE" anywhere
+                            if 'MAIN_DRIVE' in resolved:
+                                error_msg = (f"CRITICAL BUG: Resolved path '{resolved}' still contains 'MAIN_DRIVE' string. "
+                                           f"Original path: '{folder}'. This indicates resolution failed.")
+                                self.logger.error(error_msg)
+                                raise ValueError(error_msg)
+                            
+                            resolved_folders.append(resolved)
+                        pair['folders'] = resolved_folders
+                        self.logger.debug(f"one_way_pairs[{i}] resolved: {pair['folders']}")
+                else:
+                    # Old format (backward compatibility)
+                    if 'source' in pair:
+                        resolved = self._resolve_path_with_drives(pair['source'], drives)
+                        # Validate resolution
+                        if not resolved.startswith('/') and not resolved.startswith('~'):
+                            first_part = resolved.split('/')[0] if '/' in resolved else resolved
+                            if (first_part.isupper() and ('_' in first_part or first_part.endswith('_DRIVE'))) or \
+                               first_part in ['MAIN_DRIVE', 'EXTERNAL_DRIVE', 'GOOGLE_DRIVE', 'PROTON_DRIVE', 'BACKUP_DRIVE']:
+                                if first_part not in drives:
+                                    error_msg = (f"CRITICAL BUG: Path resolution failed for source '{pair['source']}'. "
+                                               f"Resolved to '{resolved}' which still contains unresolved drive placeholder '{first_part}'. "
+                                               f"This will create a literal '{first_part}' directory.")
+                                    self.logger.error(error_msg)
+                                    raise ValueError(error_msg)
+                        pair['source'] = resolved
+                    if 'target' in pair:
+                        resolved = self._resolve_path_with_drives(pair['target'], drives)
+                        # Validate resolution
+                        if not resolved.startswith('/') and not resolved.startswith('~'):
+                            first_part = resolved.split('/')[0] if '/' in resolved else resolved
+                            if (first_part.isupper() and ('_' in first_part or first_part.endswith('_DRIVE'))) or \
+                               first_part in ['MAIN_DRIVE', 'EXTERNAL_DRIVE', 'GOOGLE_DRIVE', 'PROTON_DRIVE', 'BACKUP_DRIVE']:
+                                if first_part not in drives:
+                                    error_msg = (f"CRITICAL BUG: Path resolution failed for target '{pair['target']}'. "
+                                               f"Resolved to '{resolved}' which still contains unresolved drive placeholder '{first_part}'. "
+                                               f"This will create a literal '{first_part}' directory.")
+                                    self.logger.error(error_msg)
+                                    raise ValueError(error_msg)
+                        pair['target'] = resolved
     
     def _resolve_path(self, path: str) -> str:
         """Resolve a path containing drive placeholders (uses resolved drives)."""
@@ -2210,6 +2402,7 @@ class EnhancedFileOrganizer:
                 'current_step': 'scan',
                 'scan_folders_completed': [],
                 'sync_pairs_completed': [],
+                'one_way_pairs_completed': [],
                 'deduplication_completed': False,
                 'backup_completed': False
             }
@@ -2234,6 +2427,7 @@ class EnhancedFileOrganizer:
             'current_step': 'scan',
             'scan_folders_completed': [],
             'sync_pairs_completed': [],
+            'one_way_pairs_completed': [],
             'deduplication_completed': False,
             'backup_completed': False
         }
@@ -2263,6 +2457,7 @@ class EnhancedFileOrganizer:
             'current_step': 'scan',
             'scan_folders_completed': [],
             'sync_pairs_completed': [],
+            'one_way_pairs_completed': [],
             'deduplication_completed': False,
             'backup_completed': False
         }
@@ -2871,17 +3066,11 @@ class EnhancedFileOrganizer:
         except Exception as e:
             self.logger.error(f"Error scanning directory {directory}: {e}")
     
-    def sync_configured_folders(self) -> None:
-        """Synchronize configured folder pairs (bidirectional sync)."""
-        if not self.config['enable_folder_sync']:
-            return
+    def _sync_pair_list(self, pair_list: List[Dict], progress_key: str, sync_mode: str, pair_label: str, direction_arrow: str) -> None:
+        """Sync a list of folder pairs with the specified mode."""
+        completed_pairs = self.progress.get(progress_key, [])
         
-        self.logger.info("Starting folder synchronization")
-        
-        sync_pairs = self.config.get('sync_pairs', [])
-        completed_pairs = self.progress.get('sync_pairs_completed', [])
-        
-        for i, sync_pair in enumerate(sync_pairs):
+        for i, sync_pair in enumerate(pair_list):
             # Skip already completed pairs
             if i in completed_pairs:
                 continue
@@ -2891,7 +3080,7 @@ class EnhancedFileOrganizer:
                 # New format: folders is a list of two paths
                 folders = sync_pair['folders']
                 if not isinstance(folders, list) or len(folders) != 2:
-                    self.logger.warning(f"sync_pairs[{i}]: 'folders' must be a list of exactly 2 paths")
+                    self.logger.warning(f"{pair_label}[{i}]: 'folders' must be a list of exactly 2 paths")
                     continue
                 folder_a_path = folders[0]
                 folder_b_path = folders[1]
@@ -2901,7 +3090,7 @@ class EnhancedFileOrganizer:
                 folder_b_path = sync_pair['target']
             else:
                 # Comment-only entry
-                self.logger.debug(f"Skipping sync_pairs[{i}] - comment-only entry")
+                self.logger.debug(f"Skipping {pair_label}[{i}] - comment-only entry")
                 continue
             
             # Paths should already be resolved from drive placeholders, just expand ~ and resolve
@@ -2974,7 +3163,7 @@ class EnhancedFileOrganizer:
             
             # Check if folders are the same
             if folder_a == folder_b:
-                self.logger.warning(f"sync_pairs[{i}]: Folders are identical, skipping")
+                self.logger.warning(f"{pair_label}[{i}]: Folders are identical, skipping")
                 continue
             
             # Check if either folder's drive/path is available
@@ -2984,14 +3173,20 @@ class EnhancedFileOrganizer:
                     parent = parent.parent
                 return parent.exists()
             
-            if not check_path_available(folder_a) and not check_path_available(folder_b):
-                self.logger.warning(f"Both folders unavailable: {folder_a} and {folder_b}")
-                self.logger.warning(f"Skipping sync pair {i}")
-                # Mark as completed so we don't get stuck
-                completed_pairs.append(i)
-                self.progress['sync_pairs_completed'] = completed_pairs
-                self._save_progress()
-                continue
+            if sync_mode == 'bidirectional':
+                if not check_path_available(folder_a) and not check_path_available(folder_b):
+                    self.logger.warning(f"Both folders unavailable: {folder_a} and {folder_b}")
+                    self.logger.warning(f"Skipping {pair_label} {i}")
+                    # Mark as completed so we don't get stuck
+                    completed_pairs.append(i)
+                    self.progress[progress_key] = completed_pairs
+                    self._save_progress()
+                    continue
+            else:
+                if not check_path_available(folder_a):
+                    self.logger.warning(f"Source folder unavailable: {folder_a}")
+                    self.logger.info(f"Will retry {pair_label} {i+1} on next run when source becomes available")
+                    continue
             
             # CRITICAL: Validate that folder_a and folder_b don't contain MAIN_DRIVE before proceeding
             if 'MAIN_DRIVE' in folder_a.parts:
@@ -2999,20 +3194,21 @@ class EnhancedFileOrganizer:
                            f"Original path: '{folder_a_path}'. Path parts: {folder_a.parts}. "
                            f"This sync pair is misconfigured and will create incorrect directory structures.")
                 self.logger.error(error_msg)
-                self.logger.error(f"Skipping sync pair {i+1} to prevent data corruption")
+                self.logger.error(f"Skipping {pair_label} {i+1} to prevent data corruption")
                 continue
             if 'MAIN_DRIVE' in folder_b.parts:
                 error_msg = (f"CRITICAL BUG: folder_b contains literal 'MAIN_DRIVE' directory: {folder_b}. "
                            f"Original path: '{folder_b_path}'. Path parts: {folder_b.parts}. "
                            f"This sync pair is misconfigured and will create incorrect directory structures.")
                 self.logger.error(error_msg)
-                self.logger.error(f"Skipping sync pair {i+1} to prevent data corruption")
+                self.logger.error(f"Skipping {pair_label} {i+1} to prevent data corruption")
                 continue
             
             # At least one folder exists, proceed with sync
-            if folder_a.exists() or folder_b.exists():
+            if (sync_mode == 'bidirectional' and (folder_a.exists() or folder_b.exists())) or \
+               (sync_mode != 'bidirectional' and folder_a.exists()):
                 # Use the existing folder as base for chunking if it exists
-                base_folder = folder_a if folder_a.exists() else folder_b
+                base_folder = folder_a if sync_mode != 'bidirectional' else (folder_a if folder_a.exists() else folder_b)
                 
                 # CRITICAL: Also validate base_folder doesn't contain MAIN_DRIVE
                 if 'MAIN_DRIVE' in base_folder.parts:
@@ -3053,12 +3249,16 @@ class EnhancedFileOrganizer:
                                         rel_path = subfolder_path.relative_to(folder_a)
                                         other_subfolder = folder_b / rel_path
                                     except ValueError:
-                                        # Not relative to folder_a, try folder_b
-                                        try:
-                                            rel_path = subfolder_path.relative_to(folder_b)
-                                            other_subfolder = folder_a / rel_path
-                                        except ValueError:
-                                            self.logger.error(f"Subfolder {subfolder_path} is not relative to either sync folder")
+                                        if sync_mode == 'bidirectional':
+                                            # Not relative to folder_a, try folder_b
+                                            try:
+                                                rel_path = subfolder_path.relative_to(folder_b)
+                                                other_subfolder = folder_a / rel_path
+                                            except ValueError:
+                                                self.logger.error(f"Subfolder {subfolder_path} is not relative to either sync folder")
+                                                return False
+                                        else:
+                                            self.logger.error(f"Subfolder {subfolder_path} is not relative to the source folder")
                                             return False
                                     
                                     # CRITICAL: Check if other_subfolder contains MAIN_DRIVE before syncing
@@ -3069,7 +3269,7 @@ class EnhancedFileOrganizer:
                                         self.logger.error(error_msg)
                                         return False
                                     
-                                    return self.folder_sync.sync_directories(subfolder_path, other_subfolder, sync_mode='bidirectional')
+                                    return self.folder_sync.sync_directories(subfolder_path, other_subfolder, sync_mode=sync_mode)
                                 except Exception as e:
                                     self.logger.error(f"Chunk sync failed for {subfolder_path}: {e}")
                                     return False
@@ -3096,58 +3296,83 @@ class EnhancedFileOrganizer:
                             if base_folder.exists():
                                 root_files = [f for f in base_folder.iterdir() if f.is_file()]
                                 if root_files:
-                                    # Use bidirectional sync for root files
-                                    self.folder_sync.sync_directories(folder_a, folder_b, sync_mode='bidirectional')
+                                    self.folder_sync.sync_directories(folder_a, folder_b, sync_mode=sync_mode)
                             
                             # Mark chunked sync as completed if all chunks succeeded
                             completed_pairs.append(i)
-                            self.progress['sync_pairs_completed'] = completed_pairs
+                            self.progress[progress_key] = completed_pairs
                             self.progress['current_step'] = 'sync'
                             self._save_progress()
                         else:
                             # Normal sync for smaller folders
                             short_a = self.folder_sync._shorten_path(folder_a, [folder_a, folder_b])
                             short_b = self.folder_sync._shorten_path(folder_b, [folder_a, folder_b])
-                            self.logger.info(f"Syncing folders: {short_a} ↔ {short_b}")
-                            sync_success = self.folder_sync.sync_directories(folder_a, folder_b, sync_mode='bidirectional')
+                            self.logger.info(f"Syncing folders: {short_a} {direction_arrow} {short_b}")
+                            sync_success = self.folder_sync.sync_directories(folder_a, folder_b, sync_mode=sync_mode)
                             if sync_success:
                                 completed_pairs.append(i)
-                                self.progress['sync_pairs_completed'] = completed_pairs
+                                self.progress[progress_key] = completed_pairs
                                 self.progress['current_step'] = 'sync'
                                 self._save_progress()
                             else:
-                                self.logger.warning(f"Sync failed for pair {i+1}, will retry on next run")
+                                self.logger.warning(f"Sync failed for {pair_label} {i+1}, will retry on next run")
                     except Exception as e:
                         self.logger.error(f"Error analyzing folder {base_folder}: {e}")
                         # Fall back to normal sync
                         short_a = self.folder_sync._shorten_path(folder_a, [folder_a, folder_b])
                         short_b = self.folder_sync._shorten_path(folder_b, [folder_a, folder_b])
-                        self.logger.info(f"Syncing folders: {short_a} ↔ {short_b}")
-                        sync_success = self.folder_sync.sync_directories(folder_a, folder_b, sync_mode='bidirectional')
+                        self.logger.info(f"Syncing folders: {short_a} {direction_arrow} {short_b}")
+                        sync_success = self.folder_sync.sync_directories(folder_a, folder_b, sync_mode=sync_mode)
                         if sync_success:
                             completed_pairs.append(i)
-                            self.progress['sync_pairs_completed'] = completed_pairs
+                            self.progress[progress_key] = completed_pairs
                             self.progress['current_step'] = 'sync'
                             self._save_progress()
                         else:
-                            self.logger.warning(f"Sync failed for pair {i+1}, will retry on next run")
+                            self.logger.warning(f"Sync failed for {pair_label} {i+1}, will retry on next run")
                 else:
                     # Not a directory, sync normally
                     short_a = self.folder_sync._shorten_path(folder_a, [folder_a, folder_b])
                     short_b = self.folder_sync._shorten_path(folder_b, [folder_a, folder_b])
-                    self.logger.info(f"Syncing folders: {short_a} ↔ {short_b}")
-                    sync_success = self.folder_sync.sync_directories(folder_a, folder_b, sync_mode='bidirectional')
+                    self.logger.info(f"Syncing folders: {short_a} {direction_arrow} {short_b}")
+                    sync_success = self.folder_sync.sync_directories(folder_a, folder_b, sync_mode=sync_mode)
                     if sync_success:
                         completed_pairs.append(i)
-                        self.progress['sync_pairs_completed'] = completed_pairs
+                        self.progress[progress_key] = completed_pairs
                         self.progress['current_step'] = 'sync'
                         self._save_progress()
                     else:
-                        self.logger.warning(f"Sync failed for pair {i+1}, will retry on next run")
+                        self.logger.warning(f"Sync failed for {pair_label} {i+1}, will retry on next run")
             else:
-                self.logger.warning(f"Neither folder exists: {folder_a} or {folder_b}")
-                # Don't mark as completed if folders don't exist - we want to retry
-                self.logger.info(f"Will retry sync pair {i+1} on next run when folders become available")
+                if sync_mode == 'bidirectional':
+                    self.logger.warning(f"Neither folder exists: {folder_a} or {folder_b}")
+                    # Don't mark as completed if folders don't exist - we want to retry
+                    self.logger.info(f"Will retry {pair_label} {i+1} on next run when folders become available")
+                else:
+                    self.logger.warning(f"Source folder does not exist: {folder_a}")
+                    self.logger.info(f"Will retry {pair_label} {i+1} on next run when source becomes available")
+    
+    def sync_configured_folders(self) -> None:
+        """Synchronize configured folder pairs."""
+        if not self.config['enable_folder_sync']:
+            return
+        
+        self.logger.info("Starting folder synchronization")
+        
+        self._sync_pair_list(
+            self.config.get('sync_pairs', []),
+            progress_key='sync_pairs_completed',
+            sync_mode='bidirectional',
+            pair_label='sync_pairs',
+            direction_arrow='↔'
+        )
+        self._sync_pair_list(
+            self.config.get('one_way_pairs', []),
+            progress_key='one_way_pairs_completed',
+            sync_mode='source',
+            pair_label='one_way_pairs',
+            direction_arrow='→'
+        )
     
     def remove_duplicates_across_system(self) -> None:
         """Find and remove duplicates across all source folders."""

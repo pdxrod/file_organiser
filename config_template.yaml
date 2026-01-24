@@ -29,7 +29,19 @@ sync_pairs:
   #   3. If file exists in both but A is newer → copy from A to B
   #   4. If file exists in both but B is newer → copy from B to A
 
-# Optional: roots to scan for duplicate detection when enable_duplicate_detection is true. You can use drive placeholders here (e.g. MAIN_DRIVE/Documents).
+one_way_pairs:
+  # Example: One-way backups (source → target). Files only copy from A to B.
+  - folders:
+      - "MAIN_DRIVE/dev"
+      - "PROTON_DRIVE/dev"
+  
+  # Example: One-way backups to external drive
+  - folders:
+      - "MAIN_DRIVE/Pictures"
+      - "EXTERNAL_DRIVE/Pictures"
+
+# Optional: roots to scan for duplicate detection when enable_duplicate_detection is true. 
+# You can use drive placeholders here (e.g. MAIN_DRIVE/Documents).
 source_folders:
   - "MAIN_DRIVE/Documents"
   - "MAIN_DRIVE/Pictures"
@@ -37,6 +49,12 @@ source_folders:
 # Folders matching these patterns are backed up to softlink_backup_base (maintaining full source path structure) and replaced with soft links. This prevents their contents from being copied during sync operations.
 softlink_folder_patterns:
   - ".git"
+  - ".github"
+  - ".vscode"
+  - ".idea"
+  - ".cursor"
+  - ".cursorrules"
+  - ".cursorignore"
   - ".hg"
   - ".svn"
   - ".cvs"
@@ -112,6 +130,8 @@ rsync_checksum_mode: "timestamp"
 # checksum = thorough but SLOW. timestamp = fast (recommended)
 rsync_size_only: false
 rsync_additional_args: []
+# Disable mmap if you see "mmap: Operation canceled" during rsync.
+rsync_disable_mmap: true
 max_drive_usage_percent: 90
 sync_chunk_subfolders: 30
 sync_chunk_concurrency: 1
