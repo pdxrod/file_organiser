@@ -35,7 +35,8 @@ case "$1" in
         echo "✓ Configuration file is valid"
         
         # Config is valid, now start in background
-        nohup python "$SCRIPT_NAME" --REAL > /dev/null 2>&1 &
+        # Use --no-daemon so Python runs as single process (PID stays valid); logging goes to file
+        nohup python "$SCRIPT_NAME" --REAL --no-daemon > /dev/null 2>&1 &
         PID=$!
         echo $PID > "$PID_FILE"
         

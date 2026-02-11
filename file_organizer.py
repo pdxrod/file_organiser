@@ -70,14 +70,14 @@ from collections import defaultdict
 import queue
 import concurrent.futures
 
-# Suppress PyTorch MPS pin_memory warnings on Apple Silicon
-# This warning is harmless - pin_memory just isn't supported on MPS, but everything still works
-# Filter must be set before torch is imported
+# Suppress PyTorch MPS pin_memory warnings on Apple Silicon (set before torch is ever imported)
 warnings.filterwarnings('ignore', message='.*pin_memory.*', category=UserWarning)
 warnings.filterwarnings('ignore', message='.*MPS.*', category=UserWarning)
 warnings.filterwarnings('ignore', message='.*pinned memory.*', category=UserWarning)
 
 # Third-party imports for AI/ML content analysis
+# Note: transformers, torch, easyocr are NOT imported here - they are lazy-loaded when needed
+# to avoid 30+ second startup hangs. See get_clip_model() and get_easyocr_reader().
 try:
     from PIL import Image
     import pytesseract
@@ -92,21 +92,7 @@ try:
 except ImportError:
     convert_from_path = None
 
-try:
-    import easyocr  # Better OCR for artistic text
-except ImportError:
-    easyocr = None
-
-try:
-    from transformers import CLIPProcessor, CLIPModel
-    import torch
-    # Suppress PyTorch MPS pin_memory warnings after torch import
-    import warnings
-    warnings.filterwarnings('ignore', message='.*pin_memory.*MPS.*', category=UserWarning)
-except ImportError:
-    CLIPProcessor = None
-    CLIPModel = None
-    torch = None
+# easyocr, transformers, torch: deferred to get_easyocr_reader() / get_clip_model()
 
 try:
     import docx
@@ -159,11 +145,11 @@ class DynamicContentAnalyzer:
         self._clip_processor = None
     
     def get_easyocr_reader(self):
-        """Lazy-load EasyOCR reader."""
-        if self._easyocr_reader is None and easyocr:
+        """Lazy-load EasyOCR reader (import deferred to avoid startup hang)."""
+        if self._easyocr_reader is None:
             try:
+                import easyocr
                 # Suppress stderr during EasyOCR initialization to hide PyTorch MPS warnings
-                # (These warnings are harmless - pin_memory just isn't supported on MPS)
                 import sys
                 from io import StringIO
                 old_stderr = sys.stderr
@@ -172,18 +158,23 @@ class DynamicContentAnalyzer:
                     self._easyocr_reader = easyocr.Reader(['en'], gpu=False)
                 finally:
                     sys.stderr = old_stderr
+            except ImportError:
+                self.logger.debug("EasyOCR not installed")
             except Exception as e:
                 self.logger.warning(f"Could not load EasyOCR: {e}")
         return self._easyocr_reader
     
     def get_clip_model(self):
-        """Lazy-load CLIP model."""
-        if self._clip_model is None and CLIPModel and CLIPProcessor:
+        """Lazy-load CLIP model (import deferred to avoid startup hang)."""
+        if self._clip_model is None:
             try:
+                from transformers import CLIPProcessor, CLIPModel
                 self.logger.info("Loading CLIP model (first time only)...")
                 self._clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
                 self._clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
                 self.logger.info("CLIP loaded successfully")
+            except ImportError:
+                self.logger.debug("CLIP/transformers not installed")
             except Exception as e:
                 self.logger.warning(f"Could not load CLIP: {e}")
         return self._clip_model, self._clip_processor
@@ -3889,6 +3880,16 @@ def validate_config_file(config_file: str) -> bool:
 
 def main():
     """Main entry point."""
+    # Bootstrap: configure logging immediately so daemon mode writes to log file from the start
+    log_file = Path.home() / '.file_organizer.log'
+    bootstrap_logger = logging.getLogger('file_organizer')
+    if not bootstrap_logger.handlers:
+        bootstrap_logger.setLevel(logging.INFO)
+        handler = logging.FileHandler(log_file, mode='a')
+        handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
+        bootstrap_logger.addHandler(handler)
+    bootstrap_logger.info("Starting file organizer...")
+
     parser = argparse.ArgumentParser(
         description='File Organizer using AI/ML',
         epilog='Run without arguments for TEST MODE (foo/bar/baz folders). Use --REAL for PRODUCTION MODE.'
