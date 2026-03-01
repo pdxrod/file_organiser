@@ -3155,6 +3155,33 @@ class EnhancedFileOrganizer:
             )
         return removed
 
+    def _prune_deleted_files_from_cache(self, scanned_folder: Path) -> None:
+        """Remove cache entries for source files deleted since the last scan.
+
+        Called after scan_directory() finishes for scanned_folder. Any file
+        whose cache key falls under that folder but was not visited during
+        the scan is assumed deleted — its entry is removed and its symlinks
+        in output_base are torn down via _remove_file_links().
+        """
+        folder_prefix = str(scanned_folder) + os.sep
+        deleted_keys = [
+            key for key in self._state_cache
+            if key.startswith(folder_prefix) and key not in self.processed_files
+        ]
+        if not deleted_keys:
+            return
+
+        for file_key in deleted_keys:
+            cached = self._state_cache.pop(file_key)
+            old_links = cached[2] if len(cached) > 2 else []
+            if old_links:
+                self._remove_file_links(file_key, old_links)
+            self.file_link_counts.pop(file_key, None)
+
+        self.logger.info(
+            f"Pruned {len(deleted_keys)} deleted file(s) from cache under {scanned_folder}"
+        )
+
     def _update_state_cache_for_file(
         self, file_key: str, file_path: Path, link_rel_paths: List[str]
     ) -> None:
@@ -4276,7 +4303,8 @@ class EnhancedFileOrganizer:
                 if folder_path.exists():
                     self.logger.info(f"Scanning folder {i+1}/{len(scan_folders)}: {folder}")
                     self._safe_path_operation(self.scan_directory, folder_path)
-                    
+                    self._prune_deleted_files_from_cache(folder_path)
+
                     # Mark this folder as completed
                     completed_scan_folders.append(i)
                     self.progress['scan_folders_completed'] = completed_scan_folders
