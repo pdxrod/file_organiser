@@ -1821,18 +1821,18 @@ class EnhancedFileOrganizer:
         self.file_link_counts = defaultdict(int)  # file_path -> count of links created
         self.max_links_per_file = self.config.get('max_soft_links_per_file', 6)
         
-        # Index existing symlinks in output_base so file_link_counts is
-        # accurate even for files we skip on this run.
-        self._index_existing_organized_links()
-
-        # State cache — tracks (mtime, size, link_paths) per file so unchanged
-        # files can be skipped entirely on subsequent runs.
+        # State cache — load first so _index_existing_organized_links can use it
+        # to skip the filesystem walk on warm starts.
         if self.test_mode:
             self._state_cache_file = Path.cwd() / '.file_organizer_state.json'
         else:
             self._state_cache_file = Path.home() / '.file_organizer_state.json'
         self._state_cache: Dict[str, list] = {}
         self._load_state_cache()
+
+        # Index existing symlinks in output_base so file_link_counts is
+        # accurate even for files we skip on this run.
+        self._index_existing_organized_links()
 
         # Track processed files
         self.processed_files = set()
@@ -1847,15 +1847,32 @@ class EnhancedFileOrganizer:
         return Path(backup_base)
     
     def _index_existing_organized_links(self):
-        """Scan output_base for existing symlinks to populate file_link_counts.
-        
-        This lets us accurately enforce max_soft_links_per_file even when
-        skipping previously processed files.
+        """Populate file_link_counts from state cache (fast) or filesystem walk (cold start).
+
+        The state cache records every link created for each source file as
+        [mtime, size, [rel_link_1, ...]]. When the cache is warm we skip the
+        os.walk() entirely — zero I/O, instant startup.
         """
         output_base = Path(self.config['output_base'])
         if not output_base.exists():
             return
-        
+
+        # Fast path: derive counts from state cache (O(n) dict iteration, no I/O).
+        if self._state_cache:
+            count = 0
+            for file_key, cached in self._state_cache.items():
+                link_rel_paths = cached[2] if len(cached) > 2 else []
+                if link_rel_paths:
+                    self.file_link_counts[file_key] = len(link_rel_paths)
+                    count += len(link_rel_paths)
+            if count:
+                self.logger.info(
+                    f"Indexed {count} existing symlinks across "
+                    f"{len(self.file_link_counts)} files from state cache"
+                )
+            return
+
+        # Cold start (no cache yet): walk the filesystem as before.
         count = 0
         for root, _dirs, files in os.walk(output_base):
             for name in files:
@@ -1868,9 +1885,12 @@ class EnhancedFileOrganizer:
                             count += 1
                     except (OSError, ValueError):
                         pass
-        
+
         if count:
-            self.logger.info(f"Indexed {count} existing symlinks across {len(self.file_link_counts)} files in {output_base}")
+            self.logger.info(
+                f"Indexed {count} existing symlinks across "
+                f"{len(self.file_link_counts)} files in {output_base}"
+            )
 
     def _cleanup_symlink_tree(self, base: Path, remove_excluded_targets: bool = False):
         """Remove broken symlinks (and optionally symlinks to excluded paths) under base; prune empty dirs.
