@@ -113,6 +113,15 @@ softlink_backup_base: "~/organised"
 min_file_size: 1024
 max_file_size: 104857600
 enable_content_analysis: true
+# Minimum image area in pixels before running OCR (EasyOCR/CLIP/Tesseract).
+# Images smaller than this — icons, favicons, thumbnails — are skipped for OCR
+# but still categorised by type (images/) and year. Default 10000 = 100×100 px.
+# Set to 0 to disable and run OCR on every image regardless of size.
+min_image_pixels_for_ocr: 10000
+# Minimum video file size in bytes before extracting frames for OCR.
+# Very small video files are typically stubs or corrupted containers.
+# Default 102400 = 100 KB. Set to 0 to disable.
+min_video_size_for_ocr: 102400
 # If set true, this will delete duplicate files. See 'source_folders:' above. Use with care. 
 enable_duplicate_detection: false
 # 'enable_folder_sync: true' = sync folders, 'enable_folder_sync: false' = only organize files. See 'sync_pairs' and 'one_way_pairs' above.

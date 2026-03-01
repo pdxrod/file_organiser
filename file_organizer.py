@@ -3555,9 +3555,22 @@ class EnhancedFileOrganizer:
             # OCR for images
             elif extension in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp']:
                 image = Image.open(file_path)
-                
+
+                # Guard: skip OCR on images too small to contain readable text.
+                # PIL.Image.open() is lazy — image.size reads only the header, no pixel decoding.
+                # Covers icons, favicons, and thumbnails that would waste EasyOCR/CLIP/Tesseract.
+                min_pixels = self.config.get('min_image_pixels_for_ocr', 10_000)  # default 100×100
+                if min_pixels > 0:
+                    width, height = image.size
+                    if width * height < min_pixels:
+                        self.logger.debug(
+                            f"Skipping OCR on {file_path.name} — image too small "
+                            f"({width}×{height}={width*height} px < {min_pixels} px threshold)"
+                        )
+                        return ""
+
                 all_text = []
-                
+
                 # Method 1: Try EasyOCR first (better with artistic text)
                 easyocr_reader = self.content_analyzer.get_easyocr_reader()
                 if easyocr_reader:
@@ -3649,6 +3662,15 @@ class EnhancedFileOrganizer:
             
             # Video files - extract text from frames
             elif extension in ['.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.m4v'] and cv2 and pytesseract:
+                # Guard: skip frame extraction on very small video files (stubs, corrupted
+                # containers, or near-empty clips — unlikely to have readable on-screen text).
+                min_video_bytes = self.config.get('min_video_size_for_ocr', 100 * 1024)  # default 100 KB
+                if min_video_bytes > 0 and file_path.stat().st_size < min_video_bytes:
+                    self.logger.debug(
+                        f"Skipping frame OCR on {file_path.name} — "
+                        f"file too small ({file_path.stat().st_size} B < {min_video_bytes} B threshold)"
+                    )
+                    return ""
                 self.logger.info(f"Extracting text from video: {file_path.name}")
                 return self.extract_text_from_video(file_path)
                 
