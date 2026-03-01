@@ -3160,8 +3160,9 @@ class EnhancedFileOrganizer:
 
         Called after scan_directory() finishes for scanned_folder. Any file
         whose cache key falls under that folder but was not visited during
-        the scan is assumed deleted — its entry is removed and its symlinks
-        in output_base are torn down via _remove_file_links().
+        the scan is assumed deleted — its entry is removed, its symlinks in
+        output_base are torn down, and any now-empty category directories are
+        removed (deepest-first so parents become candidates too).
         """
         folder_prefix = str(scanned_folder) + os.sep
         deleted_keys = [
@@ -3171,12 +3172,29 @@ class EnhancedFileOrganizer:
         if not deleted_keys:
             return
 
+        output_base = Path(self.config['output_base'])
+        affected_dirs: set = set()
+
         for file_key in deleted_keys:
             cached = self._state_cache.pop(file_key)
             old_links = cached[2] if len(cached) > 2 else []
             if old_links:
                 self._remove_file_links(file_key, old_links)
+                for rel in old_links:
+                    affected_dirs.add((output_base / rel).parent)
             self.file_link_counts.pop(file_key, None)
+
+        # Remove empty category directories, deepest first so parent dirs
+        # become candidates after their children are removed.
+        for d in sorted(affected_dirs, key=lambda p: len(p.parts), reverse=True):
+            if d == output_base or not d.is_dir():
+                continue
+            try:
+                if not any(d.iterdir()):
+                    d.rmdir()
+                    self.logger.debug(f"Removed empty directory: {d}")
+            except OSError:
+                pass
 
         self.logger.info(
             f"Pruned {len(deleted_keys)} deleted file(s) from cache under {scanned_folder}"
