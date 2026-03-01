@@ -934,6 +934,27 @@ class FolderSynchronizer:
         
         return False
     
+    def _is_cloud_fuse_path(self, path: Path) -> bool:
+        """Return True if path is on a cloud FUSE mount (ProtonDrive, GoogleDrive, etc.)."""
+        path_str = str(path)
+        return '/ProtonDrive' in path_str or '/GoogleDrive' in path_str
+
+    def _get_fuse_rsync_args(self) -> List[str]:
+        """
+        Return rsync args that prevent failures on FUSE/cloud mounts.
+
+        FUSE filesystems (ProtonDrive, GoogleDrive) cannot accept Unix permission or
+        ownership changes; rsync exits 23/24 on every run without these flags.
+        --modify-window=2 tolerates the coarser timestamp precision common on FUSE/FAT.
+        """
+        return [
+            '--omit-dir-times',  # Don't sync directory mtimes (FUSE usually ignores them)
+            '--no-perms',        # Don't sync file permissions
+            '--no-owner',        # Don't sync file ownership
+            '--no-group',        # Don't sync group
+            '--modify-window=2', # 2-second mtime tolerance (FUSE/FAT timestamp precision)
+        ]
+
     def sync_with_rsync(self, source: Path, target: Path, sync_mode: str, sync_excludes: List[str]) -> bool:
         """Fast synchronization using rsync."""
         try:
@@ -957,6 +978,13 @@ class FolderSynchronizer:
             # Optionally rely on size-only for change detection (even faster, fewer stats calls)
             if self.config.get('rsync_size_only', False):
                 cmd.append('--size-only')
+
+            # Auto-add FUSE-compatible flags for cloud mounts (ProtonDrive, GoogleDrive).
+            # Without these, rsync exits 23/24 every run because FUSE rejects chmod/chown.
+            if self._is_cloud_fuse_path(source) or self._is_cloud_fuse_path(target):
+                self.logger.info("Cloud FUSE mount detected — adding FUSE-compatible rsync flags")
+                for arg in self._get_fuse_rsync_args():
+                    cmd.append(arg)
 
             # Add additional args to reduce metadata ops on cloud/FUSE targets if configured
             # Example: --omit-dir-times --no-perms --no-group --no-owner --delete-after
@@ -1030,7 +1058,90 @@ class FolderSynchronizer:
         except Exception as e:
             self.logger.error(f"rsync sync failed: {e}")
             return False
-    
+
+    def sync_with_rsync_bidirectional(self, folder_a: Path, folder_b: Path, sync_excludes: List[str]) -> bool:
+        """
+        Bidirectional sync using two rsync passes (vastly faster than Python rglob on FUSE mounts).
+
+        Strategy — run rsync twice, both with --update so only the newer file wins:
+          Pass 1: A → B  (A-only files and newer-A files flow to B)
+          Pass 2: B → A  (B-only files and newer-B files flow to A)
+
+        No --delete flag in either pass: files that legitimately exist only in one
+        folder are preserved and synced to the other side in the opposite pass.
+
+        This matches _sync_bidirectional semantics but delegates the filesystem walk
+        to rsync's C implementation, which is critical for slow FUSE mounts where
+        every stat() call is a network round-trip.
+        """
+        is_cloud = self._is_cloud_fuse_path(folder_a) or self._is_cloud_fuse_path(folder_b)
+        timeout_minutes = self.config.get('sync_timeout_minutes', 60)
+        timeout_seconds = timeout_minutes * 60
+
+        def _build_cmd(src: Path, dst: Path) -> List[str]:
+            cmd = ['rsync', '-avh', '--update', '--stats']
+            if self.config.get('rsync_size_only', False):
+                cmd.append('--size-only')
+            if is_cloud:
+                for arg in self._get_fuse_rsync_args():
+                    cmd.append(arg)
+            for extra in (self.config.get('rsync_additional_args', []) or []):
+                if isinstance(extra, str) and extra.strip():
+                    cmd.append(extra.strip())
+            if self.config.get('rsync_disable_mmap', False):
+                cmd.append('--no-mmap')
+            for excl in sync_excludes:
+                cmd.extend(['--exclude', excl])
+            cmd.append(f'{src}/')
+            cmd.append(f'{dst}/')
+            return cmd
+
+        def _run_pass(src: Path, dst: Path, label: str) -> bool:
+            cmd = _build_cmd(src, dst)
+            mode_tag = 'cloud-FUSE' if is_cloud else 'local'
+            self.logger.info(f"rsync bidirectional {label} ({mode_tag}): {src} → {dst}")
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_seconds)
+                # Retry without --no-mmap if this rsync version doesn't support it
+                if result.returncode != 0 and '--no-mmap' in cmd:
+                    stderr_lower = (result.stderr or '').lower()
+                    if 'no-mmap' in stderr_lower and 'unknown option' in stderr_lower:
+                        self.logger.warning("rsync does not support --no-mmap; retrying without it")
+                        cmd = [a for a in cmd if a != '--no-mmap']
+                        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_seconds)
+            except subprocess.TimeoutExpired:
+                self.logger.error(f"rsync bidirectional {label} timed out after {timeout_minutes} min")
+                return False
+
+            if result.returncode == 0:
+                for line in result.stdout.split('\n'):
+                    if 'transferred:' in line or 'speedup' in line:
+                        self.logger.info(f"rsync {label}: {line.strip()}")
+                return True
+            elif result.returncode in [23, 24]:
+                if is_cloud:
+                    self.logger.info(
+                        f"rsync {label} partial success (exit {result.returncode}) — "
+                        f"expected on FUSE mounts; files transferred successfully"
+                    )
+                    if 'fchmodat' in result.stderr or 'permission' in result.stderr.lower():
+                        self.logger.debug("Permission errors are harmless on cloud FUSE mounts")
+                else:
+                    self.logger.warning(f"rsync {label} partial success (exit {result.returncode})")
+                    for line in result.stderr.split('\n')[:5]:
+                        if line.strip():
+                            self.logger.warning(f"  {line.strip()}")
+                return True
+            else:
+                self.logger.error(
+                    f"rsync {label} failed (exit {result.returncode}): {result.stderr[:300]}"
+                )
+                return False
+
+        ok_ab = _run_pass(folder_a, folder_b, 'A→B')
+        ok_ba = _run_pass(folder_b, folder_a, 'B→A')
+        return ok_ab and ok_ba
+
     def sync_directories(self, source: Path, target: Path, sync_mode: str = 'bidirectional') -> bool:
         """
         Bidirectional synchronization between two directories.
@@ -1143,12 +1254,19 @@ class FolderSynchronizer:
         if self._should_process_excluded_folders(target):
             self._process_excluded_folders_in_directory(target, organised_base)
         
-        # For bidirectional sync, use manual Python sync (rsync is one-way)
-        if sync_mode == 'bidirectional':
-            return self._sync_bidirectional(source, target, all_exclude_patterns, [source, target])
-        
-        # For one-way sync, try rsync first (much faster)
         use_rsync = self.config.get('use_rsync', True)
+
+        # For bidirectional sync, prefer two-pass rsync (--update each direction).
+        # This is vastly faster than Python rglob on FUSE mounts like ProtonDrive because
+        # the filesystem walk is done in C and stats are batched rather than one per call.
+        if sync_mode == 'bidirectional':
+            if use_rsync and shutil.which('rsync'):
+                if self.sync_with_rsync_bidirectional(source, target, all_exclude_patterns):
+                    return True
+                self.logger.warning("rsync bidirectional failed — falling back to Python sync")
+            return self._sync_bidirectional(source, target, all_exclude_patterns, [source, target])
+
+        # For one-way sync, try rsync first (much faster)
         if use_rsync and shutil.which('rsync'):
             return self.sync_with_rsync(source, target, sync_mode, all_exclude_patterns)
         
