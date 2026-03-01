@@ -637,28 +637,32 @@ class FolderSynchronizer:
         duplicates = {hash_val: paths for hash_val, paths in file_hashes.items() if len(paths) > 1}
         return duplicates
     
-    def remove_duplicates(self, duplicates: Dict[str, List[Path]], keep_newest: bool = True) -> int:
+    def remove_duplicates(self, duplicates: Dict[str, List[Path]], keep_newest: bool = True, dry_run: bool = True) -> int:
         """Remove duplicate files, keeping the newest (or oldest)."""
         removed_count = 0
-        
+
         for file_hash, file_paths in duplicates.items():
             if len(file_paths) <= 1:
                 continue
-            
+
             # Sort by modification time
             sorted_paths = sorted(file_paths, key=lambda p: p.stat().st_mtime, reverse=keep_newest)
             keep_file = sorted_paths[0]
-            
+
             self.logger.info(f"Keeping: {keep_file}")
-            
+
             for duplicate_file in sorted_paths[1:]:
-                try:
-                    duplicate_file.unlink()
-                    self.logger.info(f"Removed duplicate: {duplicate_file}")
+                if dry_run:
+                    self.logger.info(f"[DRY RUN] Would remove duplicate: {duplicate_file}")
                     removed_count += 1
-                except Exception as e:
-                    self.logger.error(f"Failed to remove {duplicate_file}: {e}")
-        
+                else:
+                    try:
+                        duplicate_file.unlink()
+                        self.logger.info(f"Removed duplicate: {duplicate_file}")
+                        removed_count += 1
+                    except Exception as e:
+                        self.logger.error(f"Failed to remove {duplicate_file}: {e}")
+
         return removed_count
     
     def _matches_pattern(self, path: Path, patterns: List[str]) -> bool:
@@ -4171,8 +4175,13 @@ class EnhancedFileOrganizer:
         
         if duplicates:
             self.logger.info(f"Found {len(duplicates)} groups of duplicate files")
-            removed = self.folder_sync.remove_duplicates(duplicates, keep_newest=True)
-            self.logger.info(f"Removed {removed} duplicate files")
+            dry_run = self.config.get('dedupe_dry_run', True)
+            if dry_run:
+                self.logger.info("Deduplication running in DRY RUN mode — no files will be deleted. "
+                                 "Set 'dedupe_dry_run: false' in config to enable real deletion.")
+            removed = self.folder_sync.remove_duplicates(duplicates, keep_newest=True, dry_run=dry_run)
+            action = "Would remove" if dry_run else "Removed"
+            self.logger.info(f"{action} {removed} duplicate files")
         
         # Mark as completed
         self.progress['deduplication_completed'] = True
