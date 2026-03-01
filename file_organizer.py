@@ -1732,6 +1732,7 @@ class EnhancedFileOrganizer:
             self._validate_config_structure()
             self._check_unconfigured_drives()
             self._resolve_drive_placeholders()
+            self._filter_unavailable_drives()  # Drop pairs for drives not present on this machine
         else:
             # TEST MODE: Always check for config file and guide user
             if not os.path.exists(self.config_file):
@@ -2790,6 +2791,90 @@ class EnhancedFileOrganizer:
                                     raise ValueError(error_msg)
                         pair['target'] = resolved
     
+    def _filter_unavailable_drives(self) -> None:
+        """
+        After drive placeholder resolution, check which configured drive root paths
+        actually exist on this machine.  Any sync_pair, one_way_pair, or source_folder
+        that references an unavailable drive is silently dropped with a warning.
+
+        This lets the program run normally when a drive is absent — e.g. GoogleDrive
+        was uninstalled, EXTERNAL_DRIVE is unplugged, or ProtonDrive isn't installed.
+
+        Without this, the walk-up heuristic in sync_directories would climb from
+        (say) /Users/rod/GoogleDrive/MyFiles/dev all the way up to /Users/rod and
+        conclude the drive is "online", then create the missing directories locally
+        and copy files into them — silently polluting the home folder.
+        """
+        drives = self.config.get('drives', {})
+        if not drives:
+            return
+
+        # ── Which drives are unavailable? ──────────────────────────────────────
+        unavailable: Dict[str, str] = {}  # drive_name → resolved path
+        for name, raw_path in drives.items():
+            if name.startswith('comment') or not isinstance(raw_path, str):
+                continue
+            resolved = Path(raw_path).expanduser()
+            if not resolved.exists():
+                unavailable[name] = str(resolved)
+                self.logger.warning(
+                    f"Drive '{name}' not found at {resolved} — "
+                    f"pairs and folders that use it will be skipped"
+                )
+
+        if not unavailable:
+            return  # All drives present — nothing to filter
+
+        self.logger.warning(
+            f"Unavailable drive(s): {list(unavailable.keys())}. "
+            f"Sync pairs and source folders that reference them will be skipped this cycle."
+        )
+
+        # ── Helper: does a resolved folder path live under an unavailable drive? ─
+        def _unavailable_drive_for(folder_path: str) -> Optional[str]:
+            for drive_name, drive_root in unavailable.items():
+                if folder_path == drive_root or folder_path.startswith(drive_root + '/'):
+                    return drive_name
+            return None
+
+        # ── Filter sync_pairs ──────────────────────────────────────────────────
+        kept_sync = []
+        for pair in self.config.get('sync_pairs', []):
+            folders = pair.get('folders') or [pair.get('source', ''), pair.get('target', '')]
+            bad = next((d for f in folders if f for d in [_unavailable_drive_for(f)] if d), None)
+            if bad:
+                self.logger.info(f"  Skipping sync pair {folders} — drive '{bad}' not available")
+            else:
+                kept_sync.append(pair)
+        n_dropped = len(self.config.get('sync_pairs', [])) - len(kept_sync)
+        self.config['sync_pairs'] = kept_sync
+
+        # ── Filter one_way_pairs ───────────────────────────────────────────────
+        kept_one_way = []
+        for pair in self.config.get('one_way_pairs', []):
+            folders = pair.get('folders') or [pair.get('source', ''), pair.get('target', '')]
+            bad = next((d for f in folders if f for d in [_unavailable_drive_for(f)] if d), None)
+            if bad:
+                self.logger.info(f"  Skipping one-way pair {folders} — drive '{bad}' not available")
+            else:
+                kept_one_way.append(pair)
+        n_dropped += len(self.config.get('one_way_pairs', [])) - len(kept_one_way)
+        self.config['one_way_pairs'] = kept_one_way
+
+        # ── Filter source_folders ──────────────────────────────────────────────
+        original_sources = self.config.get('source_folders', [])
+        kept_sources = []
+        for f in original_sources:
+            bad = _unavailable_drive_for(f)
+            if bad:
+                self.logger.info(f"  Skipping source_folder '{f}' — drive '{bad}' not available")
+            else:
+                kept_sources.append(f)
+        self.config['source_folders'] = kept_sources
+
+        if n_dropped:
+            self.logger.warning(f"Dropped {n_dropped} pair(s) due to unavailable drives.")
+
     def _resolve_path(self, path: str) -> str:
         """Resolve a path containing drive placeholders (uses resolved drives)."""
         drives = self.config.get('drives', {})

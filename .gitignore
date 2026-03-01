@@ -1,0 +1,35 @@
+# Personal config with real drive paths — keep off the repo.
+# Use config_minimal.yaml as the committed baseline, or copy it to config.yaml locally.
+config.yaml
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.mypy_cache/
+.pytest_cache/
+.tox/
+.venv/
+venv/
+env/
+
+# macOS
+.DS_Store
+.Spotlight-V100
+.TemporaryItems
+.fseventsd
+.DocumentRevisions-V100
+
+# Logs and runtime state
+*.log
+.file_organizer_progress.json
+.file_organizer_categories.json
+.file_organizer_links.json
+
+# Test output
+test/organized/
+
+# IDE
+.idea/
+.vscode/
+.cursor/

@@ -1,0 +1,109 @@
+# ============================================================
+# MINIMAL STARTER CONFIG — safe to use as-is, no drives required.
+#
+# This lets the organiser run without errors on any machine.
+# It only scans ~/Documents and ~/Pictures and creates soft-link
+# categories under ~/organized.  No syncing or deduplication.
+#
+# To go further, see config_template.yaml for the full set of
+# options, or add your own drives and sync_pairs here.
+#
+# Missing drives are silently skipped — add EXTERNAL_DRIVE,
+# PROTON_DRIVE, GOOGLE_DRIVE etc. and they will only be used
+# when they are present on the machine.
+# ============================================================
+
+drives:
+  MAIN_DRIVE: "~"
+  # Uncomment and adjust lines below for your own drives.
+  # Any drive whose path does not exist on this machine is ignored.
+  # EXTERNAL_DRIVE: "/Volumes/MyDrive"
+  # PROTON_DRIVE:   "MAIN_DRIVE/ProtonDrive"
+  # GOOGLE_DRIVE:   "MAIN_DRIVE/GoogleDrive/MyFiles"
+
+# Bidirectional sync pairs — add your own.
+# If any folder in a pair doesn't exist, the whole pair is skipped.
+sync_pairs: []
+
+# One-way backup pairs — add your own.
+one_way_pairs: []
+
+# Folders to scan for content analysis and soft-link organisation.
+source_folders:
+  - "MAIN_DRIVE/Documents"
+  - "MAIN_DRIVE/Pictures"
+
+output_base:           "~/organized"
+softlink_backup_base:  "~/organised"
+
+softlink_folder_patterns:
+  - ".git"
+  - ".github"
+  - ".vscode"
+  - ".idea"
+  - ".cursor"
+  - ".hg"
+  - ".svn"
+  - ".cvs"
+  - "__pycache__"
+  - ".pytest_cache"
+  - ".mypy_cache"
+  - ".tox"
+  - ".venv"
+  - "venv"
+  - "env"
+
+empty_folder_patterns:
+  - "node_modules"
+  - "dist"
+  - "build"
+  - "target"
+  - ".next"
+  - ".nuxt"
+  - ".cache"
+  - "coverage"
+
+exclude_patterns:
+  - ".DS_Store"
+  - "*.pyc"
+  - "*.log"
+  - ".Spotlight-V100"
+  - ".TemporaryItems"
+  - ".fseventsd"
+  - ".DocumentRevisions-V100"
+  - ".Trash"
+  - ".Trashes"
+
+min_file_size: 1024
+max_file_size: 104857600
+
+enable_content_analysis:  true
+enable_duplicate_detection: false  # Deletes real files — leave false until you're confident
+enable_folder_sync:        false   # Set true and add sync_pairs to enable syncing
+
+scan_interval: 3600
+use_rsync: true
+rsync_checksum_mode: "timestamp"
+rsync_size_only: false
+rsync_additional_args: []
+rsync_disable_mmap: true
+max_drive_usage_percent: 90
+sync_chunk_subfolders: 30
+sync_chunk_concurrency: 1
+sync_timeout_minutes: 60
+flaky_volume_retries: 3
+retry_delay: 5
+
+max_soft_links_per_file: 6
+
+enable_semantic_categories: true
+semantic_confidence_threshold: 0.35
+
+ml_content_analysis:
+  enabled: true
+  min_keyword_frequency: 10
+  min_category_size: 5
+  max_categories: 150
+  min_word_length: 5
+  stop_words_enabled: true
+  use_clip: false   # Very slow on CPU (~30 min first load) — leave false
