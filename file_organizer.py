@@ -1820,7 +1820,16 @@ class EnhancedFileOrganizer:
         # Index existing symlinks in output_base so file_link_counts is
         # accurate even for files we skip on this run.
         self._index_existing_organized_links()
-        
+
+        # State cache — tracks (mtime, size, link_paths) per file so unchanged
+        # files can be skipped entirely on subsequent runs.
+        if self.test_mode:
+            self._state_cache_file = Path.cwd() / '.file_organizer_state.json'
+        else:
+            self._state_cache_file = Path.home() / '.file_organizer_state.json'
+        self._state_cache: Dict[str, list] = {}
+        self._load_state_cache()
+
         # Track processed files
         self.processed_files = set()
         self._newly_processed_files = set()  # files analyzed on THIS run (not skipped)
@@ -3002,7 +3011,154 @@ class EnhancedFileOrganizer:
             'deduplication_completed': False,
             'backup_completed': False
         }
-    
+
+    # ------------------------------------------------------------------
+    # State cache helpers (incremental scanning)
+    # ------------------------------------------------------------------
+
+    def _get_config_hash(self) -> str:
+        """Return an MD5 of the config keys that affect which symlinks are created.
+
+        If any of these change between runs the cached analysis is invalid and
+        the whole cache is discarded so every file gets re-processed.
+        """
+        key_values = {k: self.config.get(k, d) for k, d in [
+            ('enable_content_analysis', True),
+            ('max_soft_links_per_file', 6),
+            ('semantic_confidence_threshold', 0.35),
+            ('min_file_size', 1024),
+            ('max_file_size', 104857600),
+        ]}
+        return hashlib.md5(json.dumps(key_values, sort_keys=True).encode()).hexdigest()
+
+    def _load_state_cache(self) -> None:
+        """Load the per-file state cache from disk into self._state_cache.
+
+        The cache maps str(absolute_path) → [mtime, size, [rel_link, ...]]
+        where rel_link paths are relative to output_base.
+
+        Test mode: always starts fresh (deletes any leftover cache file).
+        Production: discards the cache if the version or config_hash changed.
+        """
+        if self.test_mode:
+            if self._state_cache_file.exists():
+                try:
+                    self._state_cache_file.unlink()
+                    self.logger.info("Cleared stale test-mode state cache")
+                except Exception as e:
+                    self.logger.warning(f"Could not clear test state cache: {e}")
+            self._state_cache = {}
+            return
+
+        if not self._state_cache_file.exists():
+            self._state_cache = {}
+            return
+
+        try:
+            with open(self._state_cache_file, 'r') as f:
+                data = json.load(f)
+
+            if data.get('version') != 1:
+                self.logger.info("State cache version mismatch — starting fresh")
+                self._state_cache = {}
+                return
+
+            if data.get('config_hash') != self._get_config_hash():
+                self.logger.info("State cache invalidated (config changed) — starting fresh")
+                self._state_cache = {}
+                return
+
+            self._state_cache = data.get('files', {})
+            self.logger.info(
+                f"Loaded state cache: {len(self._state_cache)} entries "
+                f"from {self._state_cache_file}"
+            )
+        except Exception as e:
+            self.logger.warning(f"Could not load state cache ({e}) — starting fresh")
+            self._state_cache = {}
+
+    def _save_state_cache(self) -> None:
+        """Atomically persist self._state_cache to disk.
+
+        Uses a write-to-tmp-then-rename approach so a mid-write crash never
+        leaves a corrupt cache file.  Called after each source_folder scan
+        completes (same cadence as _save_progress) and after Steps 2/2b.
+        """
+        try:
+            data = {
+                'version': 1,
+                'config_hash': self._get_config_hash(),
+                'files': self._state_cache,
+            }
+            tmp = self._state_cache_file.with_suffix('.json.tmp')
+            with open(tmp, 'w') as f:
+                json.dump(data, f, separators=(',', ':'))  # compact — no indent
+            tmp.rename(self._state_cache_file)
+            self.logger.debug(f"State cache saved: {len(self._state_cache)} entries")
+        except Exception as e:
+            self.logger.warning(f"Could not save state cache: {e}")
+
+    def _remove_file_links(self, file_key: str, old_link_rel_paths: List[str]) -> int:
+        """Delete stale symlinks recorded in the cache for a file that has changed.
+
+        Args:
+            file_key: str(absolute_path), used as key in file_link_counts.
+            old_link_rel_paths: paths relative to output_base stored in the
+                cache entry, e.g. ["documents/foo.pdf", "2024/foo.pdf"].
+
+        Returns:
+            Number of symlinks successfully removed.
+        """
+        output_base = Path(self.config['output_base'])
+        removed = 0
+        for rel_path in old_link_rel_paths:
+            link_path = output_base / rel_path
+            try:
+                if link_path.is_symlink():
+                    link_path.unlink()
+                    removed += 1
+                    self.logger.debug(f"Removed stale link: {link_path}")
+            except Exception as e:
+                self.logger.warning(f"Could not remove stale link {link_path}: {e}")
+
+        if removed:
+            self.file_link_counts[file_key] = max(
+                0, self.file_link_counts.get(file_key, 0) - removed
+            )
+            self.logger.info(
+                f"Removed {removed} stale link(s) for changed file: "
+                f"{Path(file_key).name}"
+            )
+        return removed
+
+    def _update_state_cache_for_file(
+        self, file_key: str, file_path: Path, link_rel_paths: List[str]
+    ) -> None:
+        """Write (or overwrite) the cache entry for file_key with current stat.
+
+        Called after process_file() finishes analysis (whether or not any
+        links were created).  link_rel_paths is [] when no links were made —
+        that empty list is what allows Gate 2 in process_file() to skip
+        re-analysis on the next run.
+        """
+        try:
+            st = file_path.stat()
+            self._state_cache[file_key] = [st.st_mtime, st.st_size, link_rel_paths]
+        except Exception as e:
+            self.logger.debug(f"Could not stat {file_path} for cache update: {e}")
+
+    def _append_link_to_cache(self, file_key: str, rel_link: str) -> None:
+        """Append a link path to an existing cache entry (no-op if entry absent).
+
+        Called from Steps 2 and 2b in run_full_cycle() when keyword/semantic
+        category links are created after process_file() has already written
+        the initial cache entry.
+        """
+        entry = self._state_cache.get(file_key)
+        if entry is not None and len(entry) > 2:
+            if rel_link not in entry[2]:
+                entry[2].append(rel_link)
+
     def _safe_path_operation(self, operation, *args, **kwargs):
         """Safely execute path operations with retry logic for flaky volumes."""
         for attempt in range(self.config['flaky_volume_retries']):
@@ -3501,95 +3657,138 @@ class EnhancedFileOrganizer:
             
         return ""
     
-    def create_soft_link(self, source_path: Path, target_folder: str, target_name: str) -> bool:
-        """Create a soft link from source to target folder."""
+    def create_soft_link(
+        self, source_path: Path, target_folder: str, target_name: str
+    ) -> Optional[str]:
+        """Create a soft link from source to target folder.
+
+        Returns the link path relative to output_base (e.g. "documents/foo.pdf")
+        when a link is created or already exists correctly, None otherwise.
+        The relative path is stored in the state cache so stale links can be
+        cleaned up when a file changes.
+        """
         try:
-            # Check if we've already created too many links for this file
             file_key = str(source_path)
             current_count = self.file_link_counts[file_key]
-            
+
             if current_count >= self.max_links_per_file:
-                self.logger.debug(f"Skipping link for {source_path.name} - already has {current_count} links (max: {self.max_links_per_file})")
-                return False
-            
+                self.logger.debug(
+                    f"Skipping link for {source_path.name} - already has "
+                    f"{current_count} links (max: {self.max_links_per_file})"
+                )
+                return None
+
             target_dir = Path(self.config['output_base']) / target_folder
             target_dir.mkdir(parents=True, exist_ok=True)
-            
+
             target_path = target_dir / target_name
-            
+            rel = str(Path(target_folder) / target_name)  # relative to output_base
+
             # Check if link already exists and points to correct location
             if target_path.is_symlink():
                 try:
                     existing_target = os.readlink(target_path)
                     relative_source = os.path.relpath(source_path, target_dir)
                     if existing_target == relative_source:
-                        # Link already exists and is correct - skip
-                        return True
-                except:
+                        # Link already exists and is correct
+                        return rel
+                except Exception:
                     pass
-                # Link exists but is wrong - remove it
+                # Link exists but is wrong — remove it
                 target_path.unlink()
             elif target_path.exists():
-                # Regular file exists - remove it
+                # Regular file exists — remove it
                 target_path.unlink()
-            
+
             # Create relative symlink
             relative_source = os.path.relpath(source_path, target_dir)
             target_path.symlink_to(relative_source)
-            
-            # Increment link count for this file
             self.file_link_counts[file_key] += 1
-            
-            self.logger.debug(f"Created soft link: {target_path} -> {relative_source} (file now has {self.file_link_counts[file_key]} links)")
-            return True
-            
+            self.logger.debug(
+                f"Created soft link: {target_path} -> {relative_source} "
+                f"(file now has {self.file_link_counts[file_key]} links)"
+            )
+            return rel
+
         except Exception as e:
-            self.logger.error(f"Failed to create soft link {source_path} -> {target_folder}/{target_name}: {e}")
-            return False
+            self.logger.error(
+                f"Failed to create soft link {source_path} -> "
+                f"{target_folder}/{target_name}: {e}"
+            )
+            return None
     
     def process_file(self, file_path: Path) -> None:
         """Process a single file with dynamic content analysis."""
         if str(file_path) in self.processed_files:
             return
-        
+
         # Skip macOS metadata files (files starting with ._)
-        # These are resource fork/metadata files that macOS creates
         if file_path.name.startswith('._'):
             return
-        
+
         if self.should_exclude_path(file_path):
             return
-        
+
         file_key = str(file_path)
-        
-        # If this file already has symlinks in ~/organized, it was processed
-        # in a previous run — skip the expensive OCR / content extraction.
+
+        # Gate 1: file already has symlinks — was fully processed in a previous run.
         if self.file_link_counts.get(file_key, 0) > 0:
             self.processed_files.add(file_key)
             return
-        
+
+        # Gates 2 & 3: consult the state cache.
+        cached = self._state_cache.get(file_key)
+        if cached is not None:
+            try:
+                st = file_path.stat()
+                cached_mtime = cached[0]
+                cached_size = cached[1]
+                old_links = cached[2] if len(cached) > 2 else []
+
+                if abs(st.st_mtime - cached_mtime) < 0.01 and st.st_size == cached_size:
+                    # Gate 2: file unchanged since last analysis.
+                    if not old_links:
+                        # Was analyzed before and produced no links — safe to skip.
+                        self.processed_files.add(file_key)
+                        return
+                    # Cache says links exist but file_link_counts==0 means
+                    # ~/organized was cleared externally.  Fall through to
+                    # re-analyze; don't try to remove the already-gone links.
+                else:
+                    # Gate 3: file has changed — tear down stale links then re-analyze.
+                    if old_links:
+                        self._remove_file_links(file_key, old_links)
+                    del self._state_cache[file_key]
+            except OSError:
+                return  # file vanished between iterdir and stat
+
         try:
             # Extract content for analysis
             content = ""
             if self.config.get('enable_content_analysis', True):
                 content = self.extract_text_content(file_path)
-            
+
             # Analyze file with dynamic content analyzer
-            # This learns keywords from both path and content
             keywords = self.content_analyzer.analyze_file(file_path, content)
-            
-            # Classify file by type and year (these don't count toward max_categories)
+
+            # Classify file by type and year
             classifications = set()
             classifications.update(self.classify_by_type(file_path))
             classifications.update(self.classify_by_year(file_path))
-            
-            # Create soft links for basic classifications
+
+            # Create soft links and collect their relative paths for the cache.
+            new_link_rel_paths: List[str] = []
             for classification in classifications:
-                self.create_soft_link(file_path, classification, file_path.name)
-            
+                rel = self.create_soft_link(file_path, classification, file_path.name)
+                if rel is not None:
+                    new_link_rel_paths.append(rel)
+
             self.processed_files.add(file_key)
             self._newly_processed_files.add(file_key)
-            
+
+            # Persist analysis result so next run can skip this file if unchanged.
+            self._update_state_cache_for_file(file_key, file_path, new_link_rel_paths)
+
         except Exception as e:
             self.logger.error(f"Error processing file {file_path}: {e}")
     
@@ -4032,6 +4231,7 @@ class EnhancedFileOrganizer:
                     self.progress['scan_folders_completed'] = completed_scan_folders
                     self.progress['current_step'] = 'scan'
                     self._save_progress()
+                    self._save_state_cache()
         
         # Step 2: Discover content categories based on learned keywords
         if hasattr(self, 'running') and not self.running:
@@ -4050,7 +4250,9 @@ class EnhancedFileOrganizer:
                 for file_path_str in file_paths:
                     file_path = Path(file_path_str)
                     if file_path.exists():
-                        self.create_soft_link(file_path, category_name, file_path.name)
+                        rel = self.create_soft_link(file_path, category_name, file_path.name)
+                        if rel:
+                            self._append_link_to_cache(file_path_str, rel)
             
             # Save discovered categories for review
             categories_file = Path.home() / '.file_organizer_discovered_categories.json'
@@ -4074,13 +4276,16 @@ class EnhancedFileOrganizer:
                     for fp_str in file_paths:
                         fp = Path(fp_str)
                         if fp.exists():
-                            self.create_soft_link(fp, category_name, fp.name)
+                            rel = self.create_soft_link(fp, category_name, fp.name)
+                            if rel:
+                                self._append_link_to_cache(fp_str, rel)
                 self.logger.info(f"Created semantic links across {len(semantic_groups)} broad categories")
             else:
                 self.logger.info("Step 2b: No new files to classify semantically")
         
+        self._save_state_cache()
         self.logger.info(f"✓ Soft link organization complete! Check {self.config['output_base']}")
-        
+
         # Step 3: Sync configured folders (time-consuming, runs after organization)
         if hasattr(self, 'running') and not self.running:
             return
