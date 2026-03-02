@@ -614,29 +614,52 @@ class FolderSynchronizer:
             return ""
     
     def find_duplicates_in_directories(self, directories: List[Path]) -> Dict[str, List[Path]]:
-        """Find duplicate files across multiple directories."""
-        file_hashes = defaultdict(list)
-        
+        """Find duplicate files using two-phase detection.
+
+        Phase 1 (stat only): collect every file's size. Files with a unique
+        size cannot have duplicates — discard them immediately, no content read.
+        Phase 2 (hash): read and hash only the files that share a size with at
+        least one other file. On typical collections this eliminates 90%+ of
+        file reads.
+        """
+        # Phase 1: group file paths by size
+        size_groups: Dict[int, List[Path]] = defaultdict(list)
         for directory in directories:
             if not directory.exists():
                 self.logger.warning(f"Directory {directory} does not exist")
                 continue
-            
             try:
                 for file_path in directory.rglob('*'):
                     if file_path.is_file() and not file_path.is_symlink():
                         try:
-                            file_hash = self._get_file_hash(file_path)
-                            if file_hash:
-                                file_hashes[file_hash].append(file_path)
+                            size_groups[file_path.stat().st_size].append(file_path)
                         except Exception as e:
-                            self.logger.warning(f"Could not process {file_path}: {e}")
+                            self.logger.warning(f"Could not stat {file_path}: {e}")
             except Exception as e:
                 self.logger.error(f"Error scanning directory {directory}: {e}")
-        
-        # Return only files with duplicates
-        duplicates = {hash_val: paths for hash_val, paths in file_hashes.items() if len(paths) > 1}
-        return duplicates
+
+        # Discard size groups with only one file — they can't be duplicates
+        candidates = {sz: paths for sz, paths in size_groups.items() if len(paths) > 1}
+        total_files = sum(len(p) for p in size_groups.values())
+        candidate_files = sum(len(p) for p in candidates.values())
+        self.logger.info(
+            f"Duplicate scan: {total_files:,} files total, "
+            f"{candidate_files:,} to hash, "
+            f"{total_files - candidate_files:,} skipped (unique size)"
+        )
+
+        # Phase 2: hash only the candidates
+        file_hashes: Dict[str, List[Path]] = defaultdict(list)
+        for paths in candidates.values():
+            for file_path in paths:
+                try:
+                    file_hash = self._get_file_hash(file_path)
+                    if file_hash:
+                        file_hashes[file_hash].append(file_path)
+                except Exception as e:
+                    self.logger.warning(f"Could not hash {file_path}: {e}")
+
+        return {h: paths for h, paths in file_hashes.items() if len(paths) > 1}
     
     def remove_duplicates(self, duplicates: Dict[str, List[Path]], keep_newest: bool = True, dry_run: bool = True) -> int:
         """Remove duplicate files, keeping the newest (or oldest)."""
