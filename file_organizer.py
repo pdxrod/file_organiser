@@ -5223,8 +5223,9 @@ def main():
         print("\n✓ Configuration file is valid!")
         sys.exit(0)
     
-    # Check if already running (unless creating test environment)
-    if not args.create_test:
+    # Check if already running (unless creating test environment or running read-only commands)
+    read_only_mode = getattr(args, 'stats', False) or getattr(args, 'verify', False)
+    if not args.create_test and not read_only_mode:
         is_running, existing_pids = check_already_running()
         if is_running:
             print("\n" + "=" * 70)
@@ -5298,7 +5299,7 @@ def main():
     validate_config_file(config_file)
     
     # In production mode, if not a one-shot scan and not explicitly disabled, daemonize
-    if production_mode and not args.scan_once and not args.no_daemon and not args.internal_daemon:
+    if production_mode and not args.scan_once and not args.no_daemon and not args.internal_daemon and not read_only_mode:
         try:
             # Redirect stderr to log file so errors are captured
             log_file = Path.home() / '.file_organizer.log'
