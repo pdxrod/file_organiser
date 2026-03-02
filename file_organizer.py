@@ -1853,8 +1853,10 @@ class EnhancedFileOrganizer:
         # to skip the filesystem walk on warm starts.
         if self.test_mode:
             self._state_cache_file = Path.cwd() / '.file_organizer_state.json'
+            self._last_cycle_file = Path.cwd() / '.file_organizer_last_cycle.json'
         else:
             self._state_cache_file = Path.home() / '.file_organizer_state.json'
+            self._last_cycle_file = Path.home() / '.file_organizer_last_cycle.json'
         self._state_cache: Dict[str, list] = {}
         self._load_state_cache()
 
@@ -3282,6 +3284,17 @@ class EnhancedFileOrganizer:
         except Exception as e:
             self.logger.warning(f"Could not save state cache: {e}")
 
+    def _save_cycle_summary(self, timings: dict) -> None:
+        """Persist _cycle_stats + phase timings for display by --stats."""
+        try:
+            data = {'timestamp': time.time(), **self._cycle_stats, **timings}
+            tmp = self._last_cycle_file.with_suffix('.json.tmp')
+            with open(tmp, 'w') as f:
+                json.dump(data, f, indent=2)
+            tmp.rename(self._last_cycle_file)
+        except Exception as e:
+            self.logger.warning(f"Could not save cycle summary: {e}")
+
     def _remove_file_links(self, file_key: str, old_link_rel_paths: List[str]) -> int:
         """Delete stale symlinks recorded in the cache for a file that has changed.
 
@@ -3433,6 +3446,39 @@ class EnhancedFileOrganizer:
         avg_links = (total_links / files_with_links) if files_with_links else 0.0
 
         top_categories = sorted(category_counts.items(), key=lambda x: x[1], reverse=True)[:15]
+
+        # Last cycle section (if available)
+        if self._last_cycle_file.exists():
+            try:
+                with open(self._last_cycle_file) as f:
+                    lc = json.load(f)
+                age_secs = time.time() - lc.get('timestamp', 0)
+                def _fmt(s):
+                    if s < 60:   return f"{s:.0f}s"
+                    if s < 3600: return f"{s/60:.1f}m"
+                    return f"{s/3600:.1f}h"
+                total_scanned = (lc.get('gate1_skipped', 0) + lc.get('gate2_skipped', 0)
+                                 + lc.get('gate3_updated', 0) + lc.get('new_files', 0))
+                print(f"\n{'─' * 52}")
+                print(f"  Last cycle: {_fmt(age_secs)} ago  "
+                      f"(total: {_fmt(lc.get('elapsed_total', 0))})")
+                print(f"{'─' * 52}")
+                print(f"  Files scanned:       {total_scanned:>8,}")
+                print(f"    Already organized: {lc.get('gate1_skipped', 0):>8,}")
+                print(f"    Unchanged, skip:   {lc.get('gate2_skipped', 0):>8,}")
+                print(f"    Updated:           {lc.get('gate3_updated', 0):>8,}")
+                print(f"    New:               {lc.get('new_files', 0):>8,}")
+                print(f"  Links created:       {lc.get('links_created', 0):>8,}")
+                if lc.get('files_pruned', 0):
+                    print(f"  Files pruned:        {lc.get('files_pruned', 0):>8,}")
+                print(f"  Timing:")
+                print(f"    Scan & organize:   {_fmt(lc.get('elapsed_scan', 0)):>8}")
+                print(f"    Keyword links:     {_fmt(lc.get('elapsed_keywords', 0)):>8}")
+                print(f"    Semantic links:    {_fmt(lc.get('elapsed_semantic', 0)):>8}")
+                print(f"    Folder sync:       {_fmt(lc.get('elapsed_sync', 0)):>8}")
+                print(f"    Deduplication:     {_fmt(lc.get('elapsed_dedup', 0)):>8}")
+            except Exception:
+                pass  # corrupt or missing — silently skip
 
         print(f"\n{'─' * 52}")
         print(f"  file_organiser  ·  cache stats")
@@ -4723,6 +4769,15 @@ class EnhancedFileOrganizer:
 
         # Print end-of-cycle summary
         _t_done = time.time()
+
+        self._save_cycle_summary({
+            'elapsed_total':    _t_done  - _t_start,
+            'elapsed_scan':     _t_kw    - _t_scan,
+            'elapsed_keywords': _t_sem   - _t_kw,
+            'elapsed_semantic': _t_sync  - _t_sem,
+            'elapsed_sync':     _t_dedup - _t_sync,
+            'elapsed_dedup':    _t_done  - _t_dedup,
+        })
 
         def _fmt_dur(secs: float) -> str:
             if secs < 60:   return f"{secs:.0f}s"
