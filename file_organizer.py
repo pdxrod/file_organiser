@@ -1886,7 +1886,11 @@ class EnhancedFileOrganizer:
         if backup_base.startswith('~'):
             backup_base = str(Path.home()) + backup_base[1:]
         return Path(backup_base)
-    
+
+    def _get_output_base(self) -> Path:
+        """Get the output_base path from config, with proper ~ expansion."""
+        return Path(self.config.get('output_base', '~/organized')).expanduser()
+
     def _index_existing_organized_links(self):
         """Populate file_link_counts from state cache (fast) or filesystem walk (cold start).
 
@@ -1895,7 +1899,7 @@ class EnhancedFileOrganizer:
         os.walk() entirely — just one lstat() per file to verify the first
         cached link still exists (self-healing if output_base is cleared).
         """
-        output_base = Path(self.config['output_base'])
+        output_base = self._get_output_base()
         if not output_base.exists():
             return
 
@@ -3287,7 +3291,7 @@ class EnhancedFileOrganizer:
         Returns:
             Number of symlinks successfully removed.
         """
-        output_base = Path(self.config['output_base'])
+        output_base = self._get_output_base()
         removed = 0
         for rel_path in old_link_rel_paths:
             link_path = output_base / rel_path
@@ -3326,7 +3330,7 @@ class EnhancedFileOrganizer:
         if not deleted_keys:
             return
 
-        output_base = Path(self.config['output_base'])
+        output_base = self._get_output_base()
         affected_dirs: set = set()
 
         for file_key in deleted_keys:
@@ -4031,7 +4035,7 @@ class EnhancedFileOrganizer:
                 )
                 return None
 
-            target_dir = Path(self.config['output_base']) / target_folder
+            target_dir = self._get_output_base() / target_folder
             target_dir.mkdir(parents=True, exist_ok=True)
 
             stem = Path(target_name).stem
@@ -4586,6 +4590,8 @@ class EnhancedFileOrganizer:
         # Reset per-cycle stats and progress counter
         self._cycle_stats = {k: 0 for k in self._cycle_stats}
         self._scan_file_count = 0
+        self.processed_files = set()
+        self._newly_processed_files = set()
         _t_start = time.time()
         _t_scan = _t_kw = _t_sem = _t_sync = _t_dedup = _t_start
 
