@@ -1837,6 +1837,17 @@ class EnhancedFileOrganizer:
         # Track processed files
         self.processed_files = set()
         self._newly_processed_files = set()  # files analyzed on THIS run (not skipped)
+
+        # Per-cycle stats — reset at the start of each run_full_cycle()
+        self._cycle_stats: Dict[str, int] = {
+            'gate1_skipped': 0,   # had links already, skipped
+            'gate2_skipped': 0,   # unchanged + no links, skipped
+            'gate3_updated': 0,   # file changed, re-analyzed
+            'new_files': 0,       # not in cache, analyzed fresh
+            'links_created': 0,   # symlinks created this cycle
+            'files_pruned': 0,    # deleted source files pruned from cache
+            'dirs_cleaned': 0,    # empty dirs removed after pruning
+        }
     
     def _get_organised_base(self) -> Path:
         """Get the organised_base path from config, with default fallback."""
@@ -3192,10 +3203,12 @@ class EnhancedFileOrganizer:
             try:
                 if not any(d.iterdir()):
                     d.rmdir()
+                    self._cycle_stats['dirs_cleaned'] += 1
                     self.logger.debug(f"Removed empty directory: {d}")
             except OSError:
                 pass
 
+        self._cycle_stats['files_pruned'] += len(deleted_keys)
         self.logger.info(
             f"Pruned {len(deleted_keys)} deleted file(s) from cache under {scanned_folder}"
         )
@@ -3795,6 +3808,7 @@ class EnhancedFileOrganizer:
             relative_source = os.path.relpath(source_path, target_dir)
             target_path.symlink_to(relative_source)
             self.file_link_counts[file_key] += 1
+            self._cycle_stats['links_created'] += 1
             self.logger.debug(
                 f"Created soft link: {target_path} -> {relative_source} "
                 f"(file now has {self.file_link_counts[file_key]} links)"
@@ -3825,10 +3839,12 @@ class EnhancedFileOrganizer:
         # Gate 1: file already has symlinks — was fully processed in a previous run.
         if self.file_link_counts.get(file_key, 0) > 0:
             self.processed_files.add(file_key)
+            self._cycle_stats['gate1_skipped'] += 1
             return
 
         # Gates 2 & 3: consult the state cache.
         cached = self._state_cache.get(file_key)
+        is_new_file = (cached is None)
         if cached is not None:
             try:
                 st = file_path.stat()
@@ -3841,6 +3857,7 @@ class EnhancedFileOrganizer:
                     if not old_links:
                         # Was analyzed before and produced no links — safe to skip.
                         self.processed_files.add(file_key)
+                        self._cycle_stats['gate2_skipped'] += 1
                         return
                     # Cache says links exist but file_link_counts==0 means
                     # ~/organized was cleared externally.  Fall through to
@@ -3850,6 +3867,7 @@ class EnhancedFileOrganizer:
                     if old_links:
                         self._remove_file_links(file_key, old_links)
                     del self._state_cache[file_key]
+                    self._cycle_stats['gate3_updated'] += 1
             except OSError:
                 return  # file vanished between iterdir and stat
 
@@ -3876,6 +3894,8 @@ class EnhancedFileOrganizer:
 
             self.processed_files.add(file_key)
             self._newly_processed_files.add(file_key)
+            if is_new_file:
+                self._cycle_stats['new_files'] += 1
 
             # Persist analysis result so next run can skip this file if unchanged.
             self._update_state_cache_for_file(file_key, file_path, new_link_rel_paths)
@@ -4290,6 +4310,9 @@ class EnhancedFileOrganizer:
         if not hasattr(self, 'progress') or self.progress is None:
             self.progress = self._load_progress()
         
+        # Reset per-cycle stats
+        self._cycle_stats = {k: 0 for k in self._cycle_stats}
+
         self.logger.info("=" * 80)
         self.logger.info("Starting full organization cycle")
         self.logger.info("=" * 80)
@@ -4403,9 +4426,31 @@ class EnhancedFileOrganizer:
         
         # All steps complete - clear progress
         self._clear_progress()
-        
+
+        # Print end-of-cycle summary
+        s = self._cycle_stats
+        total_scanned = (
+            s['gate1_skipped'] + s['gate2_skipped'] +
+            s['gate3_updated'] + s['new_files']
+        )
+        total_with_links = len([k for k, v in self.file_link_counts.items() if v > 0])
+        total_links = sum(self.file_link_counts.values())
+        output_base = self.config.get('output_base', '~/organized')
         self.logger.info("=" * 80)
         self.logger.info("Full organization cycle complete")
+        self.logger.info("-" * 40)
+        self.logger.info(f"  Files scanned:            {total_scanned:>8,}")
+        self.logger.info(f"    Already organized:      {s['gate1_skipped']:>8,}")
+        self.logger.info(f"    Unchanged, skipped:     {s['gate2_skipped']:>8,}")
+        self.logger.info(f"    Updated (changed):      {s['gate3_updated']:>8,}")
+        self.logger.info(f"    New:                    {s['new_files']:>8,}")
+        self.logger.info(f"  Links created this run:   {s['links_created']:>8,}")
+        self.logger.info(f"  Files pruned (deleted):   {s['files_pruned']:>8,}")
+        if s['dirs_cleaned']:
+            self.logger.info(f"  Empty dirs removed:       {s['dirs_cleaned']:>8,}")
+        self.logger.info(f"  Unique files with links:  {total_with_links:>8,}")
+        self.logger.info(f"  Total symlinks:           {total_links:>8,}")
+        self.logger.info(f"  Output: {output_base}")
         self.logger.info("=" * 80)
     
     def run_daemon(self) -> None:
