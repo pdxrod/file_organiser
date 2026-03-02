@@ -4567,36 +4567,66 @@ class EnhancedFileOrganizer:
         )
     
     def remove_duplicates_across_system(self) -> None:
-        """Find and remove duplicates across all source folders."""
+        """Remove duplicate symlinks from the output (~/organized) directory.
+
+        Rule: if the same real file has symlinks in both a year directory
+        (e.g. 2021/) AND a named category directory (e.g. titanium/), the
+        year-directory symlink is removed.  Real files are never touched.
+        """
         if not self.config['enable_duplicate_detection']:
             return
-        
+
         # Skip if already completed
         if self.progress.get('deduplication_completed', False):
             self.logger.info("✓ Skipping deduplication - already completed in this run")
             return
-        
-        self.logger.info("Scanning for duplicate files")
-        
-        # Get source folders (use empty list if not configured)
-        source_folders = self.config.get('source_folders', [])
-        if not source_folders:
-            self.logger.warning("No source_folders configured - skipping duplicate detection")
+
+        output_base = Path(self.config.get('output_base', '~/organized')).expanduser()
+        if not output_base.exists():
+            self.logger.warning(f"Output base does not exist: {output_base}")
             return
-        
-        directories = [Path(folder) for folder in source_folders]
-        duplicates = self.folder_sync.find_duplicates_in_directories(directories)
-        
-        if duplicates:
-            self.logger.info(f"Found {len(duplicates)} groups of duplicate files")
-            dry_run = self.config.get('dedupe_dry_run', True)
-            if dry_run:
-                self.logger.info("Deduplication running in DRY RUN mode — no files will be deleted. "
-                                 "Set 'dedupe_dry_run: false' in config to enable real deletion.")
-            removed = self.folder_sync.remove_duplicates(duplicates, keep_newest=True, dry_run=dry_run)
-            action = "Would remove" if dry_run else "Removed"
-            self.logger.info(f"{action} {removed} duplicate files")
-        
+
+        self.logger.info(f"Scanning for duplicate symlinks in {output_base}")
+
+        import re
+        year_re = re.compile(r'^\d{4}$')
+
+        # Map resolved target -> list of symlink paths
+        target_to_links: Dict[str, List[Path]] = {}
+        for link in output_base.rglob('*'):
+            if link.is_symlink():
+                try:
+                    target = str(link.resolve())
+                    target_to_links.setdefault(target, []).append(link)
+                except Exception:
+                    pass
+
+        removed = 0
+        for target, links in target_to_links.items():
+            if len(links) < 2:
+                continue
+
+            year_links, named_links = [], []
+            for link in links:
+                try:
+                    top = link.relative_to(output_base).parts[0]
+                    (year_links if year_re.match(top) else named_links).append(link)
+                except Exception:
+                    pass
+
+            # Only prune year-dir copies when a named-category copy also exists
+            if year_links and named_links:
+                for link in year_links:
+                    try:
+                        link.unlink()
+                        self.logger.info(f"Removed duplicate symlink: {link}")
+                        removed += 1
+                    except Exception as e:
+                        self.logger.warning(f"Could not remove symlink {link}: {e}")
+
+        self.logger.info(f"Removed {removed} duplicate symlinks from {output_base}")
+        self._cycle_stats['files_pruned'] += removed
+
         # Mark as completed
         self.progress['deduplication_completed'] = True
         self.progress['current_step'] = 'deduplication'
