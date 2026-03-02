@@ -3329,17 +3329,27 @@ class EnhancedFileOrganizer:
         self._excl_wildcard: List[str] = [p for p in excl if '*' in p or '?' in p]
         self._excl_plain: List[str] = [p for p in excl if '*' not in p and '?' not in p]
 
-        # softlink_folder_patterns + empty_folder_patterns: EXACT path-component match.
-        # Must not use substring matching — "env" would wrongly exclude "environments".
+        # softlink_folder_patterns + empty_folder_patterns split into three groups:
         folder_pats = (
             self.config.get('softlink_folder_patterns', []) +
             self.config.get('empty_folder_patterns', [])
         )
+        # 1. Single-component patterns (no '/', no wildcards): exact path-component match.
+        #    Prevents "env" from matching "environments".
         self._excl_folder_names: set = {
-            p for p in folder_pats if '*' not in p and '?' not in p
+            p for p in folder_pats
+            if '*' not in p and '?' not in p and '/' not in p and os.sep not in p
         }
+        # 2. Wildcard patterns: fnmatch against each path component.
         self._excl_folder_wildcards: List[str] = [
             p for p in folder_pats if '*' in p or '?' in p
+        ]
+        # 3. Multi-component patterns (e.g. "priv/static", "tmp/cache"): substring match.
+        #    A path separator in the pattern means we're matching a path segment sequence,
+        #    so substring matching against the full path string is correct here.
+        self._excl_folder_substrings: List[str] = [
+            p for p in folder_pats
+            if ('/' in p or os.sep in p) and '*' not in p and '?' not in p
         ]
 
         # File extension exclusions — set for O(1) lookup
@@ -3361,15 +3371,17 @@ class EnhancedFileOrganizer:
             if path_str.startswith(folder):
                 return True
 
-        # Check softlink/empty-folder patterns against individual path components.
-        # Exact-name matching prevents "env" from matching "environments".
+        # Check softlink/empty-folder patterns.
         path_parts = path.parts
         for part in path_parts:
-            if part in self._excl_folder_names:
+            if part in self._excl_folder_names:          # exact component match
                 return True
-            for pat in self._excl_folder_wildcards:
+            for pat in self._excl_folder_wildcards:      # wildcard component match
                 if fnmatch.fnmatch(part, pat):
                     return True
+        for substr in self._excl_folder_substrings:      # multi-component substring match
+            if substr in path_str:
+                return True
 
         # Check exclude_patterns: wildcard against components, plain as substring
         for pat in self._excl_wildcard:
@@ -3870,37 +3882,46 @@ class EnhancedFileOrganizer:
             target_dir = Path(self.config['output_base']) / target_folder
             target_dir.mkdir(parents=True, exist_ok=True)
 
-            target_path = target_dir / target_name
-            rel = str(Path(target_folder) / target_name)  # relative to output_base
+            stem = Path(target_name).stem
+            suffix = Path(target_name).suffix
+            relative_source = os.path.relpath(source_path, target_dir)
 
-            # Check if link already exists and points to correct location
-            if target_path.is_symlink():
-                try:
-                    existing_target = os.readlink(target_path)
-                    relative_source = os.path.relpath(source_path, target_dir)
-                    if existing_target == relative_source:
-                        # Link already exists and is correct
-                        return rel
-                except Exception:
-                    pass
-                # Link exists but points elsewhere — decrement the displaced file's
-                # count so Gate 1 won't permanently skip it next run.
-                try:
-                    old_abs = (target_dir / os.readlink(target_path)).resolve()
-                    old_key = str(old_abs)
-                    if old_key != file_key and old_key in self.file_link_counts:
-                        self.file_link_counts[old_key] = max(
-                            0, self.file_link_counts[old_key] - 1
-                        )
-                except Exception:
-                    pass
-                target_path.unlink()
-            elif target_path.exists():
-                # Regular file exists — remove it
-                target_path.unlink()
+            # Find the right slot: prefer the natural name, fall back to
+            # "stem (2).ext", "stem (3).ext", … to avoid last-writer-wins.
+            # First scan for an existing slot already pointing to our source
+            # (handles re-runs where we previously got a numbered slot).
+            target_path = None
+            rel = None
+            for i in range(1, self.max_links_per_file + 10):
+                candidate_name = target_name if i == 1 else f"{stem} ({i}){suffix}"
+                candidate = target_dir / candidate_name
+                if candidate.is_symlink():
+                    try:
+                        if os.readlink(candidate) == relative_source:
+                            # Already have a correct link here — reuse it.
+                            return str(Path(target_folder) / candidate_name)
+                    except Exception:
+                        pass
+                    # Occupied by someone else — keep searching.
+                elif not candidate.exists():
+                    # Free slot found.
+                    target_path = candidate
+                    rel = str(Path(target_folder) / candidate_name)
+                    break
+
+            if target_path is None:
+                self.logger.debug(
+                    f"No free slot found for {source_path.name} in {target_folder}"
+                )
+                return None
+
+            if i > 1:
+                self.logger.debug(
+                    f"Name collision: {target_name} taken in {target_folder}; "
+                    f"using {target_path.name}"
+                )
 
             # Create relative symlink
-            relative_source = os.path.relpath(source_path, target_dir)
             target_path.symlink_to(relative_source)
             self.file_link_counts[file_key] += 1
             self._cycle_stats['links_created'] += 1
