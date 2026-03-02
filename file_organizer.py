@@ -1868,6 +1868,7 @@ class EnhancedFileOrganizer:
 
         # Files examined counter for periodic progress logging — reset each cycle
         self._scan_file_count: int = 0
+        self._scan_start_time: float = 0.0
 
         # Per-cycle stats — reset at the start of each run_full_cycle()
         self._cycle_stats: Dict[str, int] = {
@@ -4112,7 +4113,11 @@ class EnhancedFileOrganizer:
         # Periodic progress indicator — log every 500 files examined.
         self._scan_file_count += 1
         if self._scan_file_count % 500 == 0:
-            self.logger.info(f"  ... {self._scan_file_count:,} files examined so far this cycle")
+            elapsed = time.time() - self._scan_start_time
+            rate = int(self._scan_file_count / elapsed) if elapsed > 0 else 0
+            self.logger.info(
+                f"  ... {self._scan_file_count:,} files examined  ({rate:,}/sec)"
+            )
 
         # Gate 1: file already has symlinks — was fully processed in a previous run.
         if self.file_link_counts.get(file_key, 0) > 0:
@@ -4591,6 +4596,7 @@ class EnhancedFileOrganizer:
         # Reset per-cycle stats and progress counter
         self._cycle_stats = {k: 0 for k in self._cycle_stats}
         self._scan_file_count = 0
+        self._scan_start_time = time.time()
         self.processed_files = set()
         self._newly_processed_files = set()
         _t_start = time.time()
