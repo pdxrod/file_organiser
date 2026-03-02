@@ -1881,9 +1881,16 @@ class EnhancedFileOrganizer:
                 link_rel_paths = cached[2] if len(cached) > 2 else []
                 if not link_rel_paths:
                     continue
-                # One lstat() per file — far cheaper than walking the whole tree.
-                if not (output_base / link_rel_paths[0]).is_symlink():
-                    continue  # output_base was cleared; skip so scan re-analyzes this file
+                # One lstat+readlink per file — verify the symlink exists and points to
+                # this file (not a collision victim where another file stole the slot).
+                first_link = output_base / link_rel_paths[0]
+                try:
+                    if not first_link.is_symlink():
+                        continue  # output_base was cleared externally
+                    if str(first_link.resolve()) != file_key:
+                        continue  # Link was overwritten by a different source file
+                except (OSError, ValueError):
+                    continue
                 self.file_link_counts[file_key] = len(link_rel_paths)
                 count += len(link_rel_paths)
             if count:
@@ -2260,6 +2267,41 @@ class EnhancedFileOrganizer:
             except Exception:
                 pass
         
+        # Check for unknown top-level config keys (catches typos)
+        KNOWN_KEYS = {
+            'drives', 'sync_pairs', 'one_way_pairs', 'source_folders',
+            'softlink_folder_patterns', 'empty_folder_patterns',
+            'exclude_patterns', 'exclude_folders', 'exclude_extensions',
+            'output_base', 'softlink_backup_base',
+            'min_file_size', 'max_file_size',
+            'enable_content_analysis', 'min_image_pixels_for_ocr', 'min_video_size_for_ocr',
+            'enable_duplicate_detection', 'dedupe_dry_run',
+            'enable_folder_sync',
+            'scan_interval', 'flaky_volume_retries', 'retry_delay',
+            'use_rsync', 'rsync_checksum_mode', 'rsync_size_only',
+            'rsync_additional_args', 'rsync_disable_mmap',
+            'max_drive_usage_percent', 'sync_chunk_subfolders',
+            'sync_chunk_concurrency', 'sync_timeout_minutes',
+            'max_soft_links_per_file',
+            'enable_semantic_categories', 'semantic_confidence_threshold',
+            'ml_content_analysis',
+            'enable_background_backup', 'backup_drive_path', 'backup_directories',
+        }
+        unknown = [k for k in config if k not in KNOWN_KEYS]
+        if unknown:
+            warnings.append(
+                f"Unknown config key(s): {', '.join(sorted(unknown))} — possible typo?"
+            )
+
+        # Check file size constraint
+        min_sz = config.get('min_file_size')
+        max_sz = config.get('max_file_size')
+        if isinstance(min_sz, (int, float)) and isinstance(max_sz, (int, float)):
+            if min_sz > max_sz:
+                errors.append(
+                    f"min_file_size ({min_sz}) must be ≤ max_file_size ({max_sz})"
+                )
+
         # Check for reasonable numeric values
         if 'scan_interval' in config:
             interval = config['scan_interval']
@@ -3808,7 +3850,17 @@ class EnhancedFileOrganizer:
                         return rel
                 except Exception:
                     pass
-                # Link exists but is wrong — remove it
+                # Link exists but points elsewhere — decrement the displaced file's
+                # count so Gate 1 won't permanently skip it next run.
+                try:
+                    old_abs = (target_dir / os.readlink(target_path)).resolve()
+                    old_key = str(old_abs)
+                    if old_key != file_key and old_key in self.file_link_counts:
+                        self.file_link_counts[old_key] = max(
+                            0, self.file_link_counts[old_key] - 1
+                        )
+                except Exception:
+                    pass
                 target_path.unlink()
             elif target_path.exists():
                 # Regular file exists — remove it
