@@ -26,6 +26,7 @@ Features:
 
 import os
 import sys
+import fnmatch
 
 # Suppress macOS MallocStackLogging warnings (harmless but annoying)
 # This warning appears when libraries (like PyTorch/NumPy) try to disable malloc stack logging
@@ -53,6 +54,7 @@ sys.stderr = MallocStackLoggingFilter(sys.stderr)
 import time
 import hashlib
 import logging
+from logging.handlers import RotatingFileHandler
 import argparse
 import signal
 import threading
@@ -613,52 +615,79 @@ class FolderSynchronizer:
             return ""
     
     def find_duplicates_in_directories(self, directories: List[Path]) -> Dict[str, List[Path]]:
-        """Find duplicate files across multiple directories."""
-        file_hashes = defaultdict(list)
-        
+        """Find duplicate files using two-phase detection.
+
+        Phase 1 (stat only): collect every file's size. Files with a unique
+        size cannot have duplicates — discard them immediately, no content read.
+        Phase 2 (hash): read and hash only the files that share a size with at
+        least one other file. On typical collections this eliminates 90%+ of
+        file reads.
+        """
+        # Phase 1: group file paths by size
+        size_groups: Dict[int, List[Path]] = defaultdict(list)
         for directory in directories:
             if not directory.exists():
                 self.logger.warning(f"Directory {directory} does not exist")
                 continue
-            
             try:
                 for file_path in directory.rglob('*'):
                     if file_path.is_file() and not file_path.is_symlink():
                         try:
-                            file_hash = self._get_file_hash(file_path)
-                            if file_hash:
-                                file_hashes[file_hash].append(file_path)
+                            size_groups[file_path.stat().st_size].append(file_path)
                         except Exception as e:
-                            self.logger.warning(f"Could not process {file_path}: {e}")
+                            self.logger.warning(f"Could not stat {file_path}: {e}")
             except Exception as e:
                 self.logger.error(f"Error scanning directory {directory}: {e}")
-        
-        # Return only files with duplicates
-        duplicates = {hash_val: paths for hash_val, paths in file_hashes.items() if len(paths) > 1}
-        return duplicates
+
+        # Discard size groups with only one file — they can't be duplicates
+        candidates = {sz: paths for sz, paths in size_groups.items() if len(paths) > 1}
+        total_files = sum(len(p) for p in size_groups.values())
+        candidate_files = sum(len(p) for p in candidates.values())
+        self.logger.info(
+            f"Duplicate scan: {total_files:,} files total, "
+            f"{candidate_files:,} to hash, "
+            f"{total_files - candidate_files:,} skipped (unique size)"
+        )
+
+        # Phase 2: hash only the candidates
+        file_hashes: Dict[str, List[Path]] = defaultdict(list)
+        for paths in candidates.values():
+            for file_path in paths:
+                try:
+                    file_hash = self._get_file_hash(file_path)
+                    if file_hash:
+                        file_hashes[file_hash].append(file_path)
+                except Exception as e:
+                    self.logger.warning(f"Could not hash {file_path}: {e}")
+
+        return {h: paths for h, paths in file_hashes.items() if len(paths) > 1}
     
-    def remove_duplicates(self, duplicates: Dict[str, List[Path]], keep_newest: bool = True) -> int:
+    def remove_duplicates(self, duplicates: Dict[str, List[Path]], keep_newest: bool = True, dry_run: bool = True) -> int:
         """Remove duplicate files, keeping the newest (or oldest)."""
         removed_count = 0
-        
+
         for file_hash, file_paths in duplicates.items():
             if len(file_paths) <= 1:
                 continue
-            
+
             # Sort by modification time
             sorted_paths = sorted(file_paths, key=lambda p: p.stat().st_mtime, reverse=keep_newest)
             keep_file = sorted_paths[0]
-            
+
             self.logger.info(f"Keeping: {keep_file}")
-            
+
             for duplicate_file in sorted_paths[1:]:
-                try:
-                    duplicate_file.unlink()
-                    self.logger.info(f"Removed duplicate: {duplicate_file}")
+                if dry_run:
+                    self.logger.info(f"[DRY RUN] Would remove duplicate: {duplicate_file}")
                     removed_count += 1
-                except Exception as e:
-                    self.logger.error(f"Failed to remove {duplicate_file}: {e}")
-        
+                else:
+                    try:
+                        duplicate_file.unlink()
+                        self.logger.info(f"Removed duplicate: {duplicate_file}")
+                        removed_count += 1
+                    except Exception as e:
+                        self.logger.error(f"Failed to remove {duplicate_file}: {e}")
+
         return removed_count
     
     def _matches_pattern(self, path: Path, patterns: List[str]) -> bool:
@@ -934,6 +963,27 @@ class FolderSynchronizer:
         
         return False
     
+    def _is_cloud_fuse_path(self, path: Path) -> bool:
+        """Return True if path is on a cloud FUSE mount (ProtonDrive, GoogleDrive, etc.)."""
+        path_str = str(path)
+        return '/ProtonDrive' in path_str or '/GoogleDrive' in path_str
+
+    def _get_fuse_rsync_args(self) -> List[str]:
+        """
+        Return rsync args that prevent failures on FUSE/cloud mounts.
+
+        FUSE filesystems (ProtonDrive, GoogleDrive) cannot accept Unix permission or
+        ownership changes; rsync exits 23/24 on every run without these flags.
+        --modify-window=2 tolerates the coarser timestamp precision common on FUSE/FAT.
+        """
+        return [
+            '--omit-dir-times',  # Don't sync directory mtimes (FUSE usually ignores them)
+            '--no-perms',        # Don't sync file permissions
+            '--no-owner',        # Don't sync file ownership
+            '--no-group',        # Don't sync group
+            '--modify-window=2', # 2-second mtime tolerance (FUSE/FAT timestamp precision)
+        ]
+
     def sync_with_rsync(self, source: Path, target: Path, sync_mode: str, sync_excludes: List[str]) -> bool:
         """Fast synchronization using rsync."""
         try:
@@ -957,6 +1007,13 @@ class FolderSynchronizer:
             # Optionally rely on size-only for change detection (even faster, fewer stats calls)
             if self.config.get('rsync_size_only', False):
                 cmd.append('--size-only')
+
+            # Auto-add FUSE-compatible flags for cloud mounts (ProtonDrive, GoogleDrive).
+            # Without these, rsync exits 23/24 every run because FUSE rejects chmod/chown.
+            if self._is_cloud_fuse_path(source) or self._is_cloud_fuse_path(target):
+                self.logger.info("Cloud FUSE mount detected — adding FUSE-compatible rsync flags")
+                for arg in self._get_fuse_rsync_args():
+                    cmd.append(arg)
 
             # Add additional args to reduce metadata ops on cloud/FUSE targets if configured
             # Example: --omit-dir-times --no-perms --no-group --no-owner --delete-after
@@ -1030,7 +1087,90 @@ class FolderSynchronizer:
         except Exception as e:
             self.logger.error(f"rsync sync failed: {e}")
             return False
-    
+
+    def sync_with_rsync_bidirectional(self, folder_a: Path, folder_b: Path, sync_excludes: List[str]) -> bool:
+        """
+        Bidirectional sync using two rsync passes (vastly faster than Python rglob on FUSE mounts).
+
+        Strategy — run rsync twice, both with --update so only the newer file wins:
+          Pass 1: A → B  (A-only files and newer-A files flow to B)
+          Pass 2: B → A  (B-only files and newer-B files flow to A)
+
+        No --delete flag in either pass: files that legitimately exist only in one
+        folder are preserved and synced to the other side in the opposite pass.
+
+        This matches _sync_bidirectional semantics but delegates the filesystem walk
+        to rsync's C implementation, which is critical for slow FUSE mounts where
+        every stat() call is a network round-trip.
+        """
+        is_cloud = self._is_cloud_fuse_path(folder_a) or self._is_cloud_fuse_path(folder_b)
+        timeout_minutes = self.config.get('sync_timeout_minutes', 60)
+        timeout_seconds = timeout_minutes * 60
+
+        def _build_cmd(src: Path, dst: Path) -> List[str]:
+            cmd = ['rsync', '-avh', '--update', '--stats']
+            if self.config.get('rsync_size_only', False):
+                cmd.append('--size-only')
+            if is_cloud:
+                for arg in self._get_fuse_rsync_args():
+                    cmd.append(arg)
+            for extra in (self.config.get('rsync_additional_args', []) or []):
+                if isinstance(extra, str) and extra.strip():
+                    cmd.append(extra.strip())
+            if self.config.get('rsync_disable_mmap', False):
+                cmd.append('--no-mmap')
+            for excl in sync_excludes:
+                cmd.extend(['--exclude', excl])
+            cmd.append(f'{src}/')
+            cmd.append(f'{dst}/')
+            return cmd
+
+        def _run_pass(src: Path, dst: Path, label: str) -> bool:
+            cmd = _build_cmd(src, dst)
+            mode_tag = 'cloud-FUSE' if is_cloud else 'local'
+            self.logger.info(f"rsync bidirectional {label} ({mode_tag}): {src} → {dst}")
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_seconds)
+                # Retry without --no-mmap if this rsync version doesn't support it
+                if result.returncode != 0 and '--no-mmap' in cmd:
+                    stderr_lower = (result.stderr or '').lower()
+                    if 'no-mmap' in stderr_lower and 'unknown option' in stderr_lower:
+                        self.logger.warning("rsync does not support --no-mmap; retrying without it")
+                        cmd = [a for a in cmd if a != '--no-mmap']
+                        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_seconds)
+            except subprocess.TimeoutExpired:
+                self.logger.error(f"rsync bidirectional {label} timed out after {timeout_minutes} min")
+                return False
+
+            if result.returncode == 0:
+                for line in result.stdout.split('\n'):
+                    if 'transferred:' in line or 'speedup' in line:
+                        self.logger.info(f"rsync {label}: {line.strip()}")
+                return True
+            elif result.returncode in [23, 24]:
+                if is_cloud:
+                    self.logger.info(
+                        f"rsync {label} partial success (exit {result.returncode}) — "
+                        f"expected on FUSE mounts; files transferred successfully"
+                    )
+                    if 'fchmodat' in result.stderr or 'permission' in result.stderr.lower():
+                        self.logger.debug("Permission errors are harmless on cloud FUSE mounts")
+                else:
+                    self.logger.warning(f"rsync {label} partial success (exit {result.returncode})")
+                    for line in result.stderr.split('\n')[:5]:
+                        if line.strip():
+                            self.logger.warning(f"  {line.strip()}")
+                return True
+            else:
+                self.logger.error(
+                    f"rsync {label} failed (exit {result.returncode}): {result.stderr[:300]}"
+                )
+                return False
+
+        ok_ab = _run_pass(folder_a, folder_b, 'A→B')
+        ok_ba = _run_pass(folder_b, folder_a, 'B→A')
+        return ok_ab and ok_ba
+
     def sync_directories(self, source: Path, target: Path, sync_mode: str = 'bidirectional') -> bool:
         """
         Bidirectional synchronization between two directories.
@@ -1143,12 +1283,19 @@ class FolderSynchronizer:
         if self._should_process_excluded_folders(target):
             self._process_excluded_folders_in_directory(target, organised_base)
         
-        # For bidirectional sync, use manual Python sync (rsync is one-way)
-        if sync_mode == 'bidirectional':
-            return self._sync_bidirectional(source, target, all_exclude_patterns, [source, target])
-        
-        # For one-way sync, try rsync first (much faster)
         use_rsync = self.config.get('use_rsync', True)
+
+        # For bidirectional sync, prefer two-pass rsync (--update each direction).
+        # This is vastly faster than Python rglob on FUSE mounts like ProtonDrive because
+        # the filesystem walk is done in C and stats are batched rather than one per call.
+        if sync_mode == 'bidirectional':
+            if use_rsync and shutil.which('rsync'):
+                if self.sync_with_rsync_bidirectional(source, target, all_exclude_patterns):
+                    return True
+                self.logger.warning("rsync bidirectional failed — falling back to Python sync")
+            return self._sync_bidirectional(source, target, all_exclude_patterns, [source, target])
+
+        # For one-way sync, try rsync first (much faster)
         if use_rsync and shutil.which('rsync'):
             return self.sync_with_rsync(source, target, sync_mode, all_exclude_patterns)
         
@@ -1614,6 +1761,7 @@ class EnhancedFileOrganizer:
             self._validate_config_structure()
             self._check_unconfigured_drives()
             self._resolve_drive_placeholders()
+            self._filter_unavailable_drives()  # Drop pairs for drives not present on this machine
         else:
             # TEST MODE: Always check for config file and guide user
             if not os.path.exists(self.config_file):
@@ -1675,6 +1823,9 @@ class EnhancedFileOrganizer:
             # In production mode, save to home directory
             self.progress_file = Path.home() / '.file_organizer_progress.json'
         
+        # Pre-compile exclusion structures (must come after all config overrides)
+        self._setup_exclude_cache()
+
         # Initialize managers (after config overrides)
         self.folder_sync = FolderSynchronizer(self.logger, self.config)
         self.background_backup = BackgroundBackup(self.logger, self.config)
@@ -1698,13 +1849,39 @@ class EnhancedFileOrganizer:
         self.file_link_counts = defaultdict(int)  # file_path -> count of links created
         self.max_links_per_file = self.config.get('max_soft_links_per_file', 6)
         
+        # State cache — load first so _index_existing_organized_links can use it
+        # to skip the filesystem walk on warm starts.
+        if self.test_mode:
+            self._state_cache_file = Path.cwd() / '.file_organizer_state.json'
+            self._last_cycle_file = Path.cwd() / '.file_organizer_last_cycle.json'
+        else:
+            self._state_cache_file = Path.home() / '.file_organizer_state.json'
+            self._last_cycle_file = Path.home() / '.file_organizer_last_cycle.json'
+        self._state_cache: Dict[str, list] = {}
+        self._load_state_cache()
+
         # Index existing symlinks in output_base so file_link_counts is
         # accurate even for files we skip on this run.
         self._index_existing_organized_links()
-        
+
         # Track processed files
         self.processed_files = set()
         self._newly_processed_files = set()  # files analyzed on THIS run (not skipped)
+
+        # Files examined counter for periodic progress logging — reset each cycle
+        self._scan_file_count: int = 0
+        self._scan_start_time: float = 0.0
+
+        # Per-cycle stats — reset at the start of each run_full_cycle()
+        self._cycle_stats: Dict[str, int] = {
+            'gate1_skipped': 0,   # had links already, skipped
+            'gate2_skipped': 0,   # unchanged + no links, skipped
+            'gate3_updated': 0,   # file changed, re-analyzed
+            'new_files': 0,       # not in cache, analyzed fresh
+            'links_created': 0,   # symlinks created this cycle
+            'files_pruned': 0,    # deleted source files pruned from cache
+            'dirs_cleaned': 0,    # empty dirs removed after pruning
+        }
     
     def _get_organised_base(self) -> Path:
         """Get the organised_base path from config, with default fallback."""
@@ -1713,17 +1890,52 @@ class EnhancedFileOrganizer:
         if backup_base.startswith('~'):
             backup_base = str(Path.home()) + backup_base[1:]
         return Path(backup_base)
-    
+
+    def _get_output_base(self) -> Path:
+        """Get the output_base path from config, with proper ~ expansion."""
+        return Path(self.config.get('output_base', '~/organized')).expanduser()
+
     def _index_existing_organized_links(self):
-        """Scan output_base for existing symlinks to populate file_link_counts.
-        
-        This lets us accurately enforce max_soft_links_per_file even when
-        skipping previously processed files.
+        """Populate file_link_counts from state cache (fast) or filesystem walk (cold start).
+
+        The state cache records every link created for each source file as
+        [mtime, size, [rel_link_1, ...]]. When the cache is warm we skip the
+        os.walk() entirely — just one lstat() per file to verify the first
+        cached link still exists (self-healing if output_base is cleared).
         """
-        output_base = Path(self.config['output_base'])
+        output_base = self._get_output_base()
         if not output_base.exists():
             return
-        
+
+        # Fast path: derive counts from state cache (O(n) dict iteration, 1 lstat per file).
+        # We verify the first cached link actually exists on disk so that an externally
+        # cleared output_base doesn't leave Gate 1 permanently blocking re-analysis.
+        if self._state_cache:
+            count = 0
+            for file_key, cached in self._state_cache.items():
+                link_rel_paths = cached[2] if len(cached) > 2 else []
+                if not link_rel_paths:
+                    continue
+                # One lstat+readlink per file — verify the symlink exists and points to
+                # this file (not a collision victim where another file stole the slot).
+                first_link = output_base / link_rel_paths[0]
+                try:
+                    if not first_link.is_symlink():
+                        continue  # output_base was cleared externally
+                    if str(first_link.resolve()) != file_key:
+                        continue  # Link was overwritten by a different source file
+                except (OSError, ValueError):
+                    continue
+                self.file_link_counts[file_key] = len(link_rel_paths)
+                count += len(link_rel_paths)
+            if count:
+                self.logger.info(
+                    f"Indexed {count} existing symlinks across "
+                    f"{len(self.file_link_counts)} files from state cache"
+                )
+            return
+
+        # Cold start (no cache yet): walk the filesystem as before.
         count = 0
         for root, _dirs, files in os.walk(output_base):
             for name in files:
@@ -1736,9 +1948,12 @@ class EnhancedFileOrganizer:
                             count += 1
                     except (OSError, ValueError):
                         pass
-        
+
         if count:
-            self.logger.info(f"Indexed {count} existing symlinks across {len(self.file_link_counts)} files in {output_base}")
+            self.logger.info(
+                f"Indexed {count} existing symlinks across "
+                f"{len(self.file_link_counts)} files in {output_base}"
+            )
 
     def _cleanup_symlink_tree(self, base: Path, remove_excluded_targets: bool = False):
         """Remove broken symlinks (and optionally symlinks to excluded paths) under base; prune empty dirs.
@@ -1817,6 +2032,68 @@ class EnhancedFileOrganizer:
             f"({total_broken} broken, {total_excluded} excluded)"
         )
         print(f"Total: {total_removed} symlinks removed ({total_broken} broken, {total_excluded} excluded)")
+
+    def verify_organized(self) -> int:
+        """Walk ~/organized and report broken symlinks (read-only).
+
+        Returns the count of broken symlinks found (0 = all healthy).
+        Also cross-references the state cache to surface entries whose
+        recorded symlinks are missing from disk.
+        """
+        output_base = Path(self.config.get('output_base', '~/organized')).expanduser()
+
+        if not output_base.exists():
+            print(f"Output directory does not exist: {output_base}")
+            return 0
+
+        total = broken = 0
+        broken_by_category: dict = {}
+
+        for root, dirs, files in os.walk(output_base):
+            for name in files:
+                link_path = Path(root) / name
+                if not link_path.is_symlink():
+                    continue
+                total += 1
+                try:
+                    target = link_path.resolve()
+                    if not target.exists():
+                        broken += 1
+                        rel = link_path.relative_to(output_base)
+                        cat = rel.parts[0] if rel.parts else "?"
+                        broken_by_category.setdefault(cat, []).append(str(link_path))
+                except Exception:
+                    broken += 1
+
+        # Cross-reference state cache: entries whose first recorded link is absent
+        stale_cache = 0
+        for entry in self._state_cache.values():
+            links = entry[2] if len(entry) > 2 else []
+            if links and not (output_base / links[0]).is_symlink():
+                stale_cache += 1
+
+        print(f"\n{'─' * 52}")
+        print(f"  file_organiser  ·  verify")
+        print(f"{'─' * 52}")
+        print(f"  Directory : {output_base}")
+        print(f"  Symlinks  : {total:,} total,  {broken:,} broken")
+        if stale_cache:
+            print(f"  Cache     : {stale_cache:,} entries with missing symlinks")
+        else:
+            print(f"  Cache     : all recorded symlinks present")
+        if broken_by_category:
+            print(f"{'─' * 52}")
+            print(f"  Broken symlinks by category:")
+            for cat, paths in sorted(broken_by_category.items()):
+                print(f"    {cat:<28} {len(paths):>4} broken")
+            print(f"{'─' * 52}")
+            print(f"  Run --cleanup to remove broken symlinks.")
+        else:
+            print(f"{'─' * 52}")
+            print(f"  All symlinks are healthy.")
+        print(f"{'─' * 52}\n")
+
+        return broken
 
     def _load_config(self) -> Dict:
         """Load configuration from YAML file."""
@@ -2087,6 +2364,41 @@ class EnhancedFileOrganizer:
             except Exception:
                 pass
         
+        # Check for unknown top-level config keys (catches typos)
+        KNOWN_KEYS = {
+            'drives', 'sync_pairs', 'one_way_pairs', 'source_folders',
+            'softlink_folder_patterns', 'empty_folder_patterns',
+            'exclude_patterns', 'exclude_folders', 'exclude_extensions',
+            'output_base', 'softlink_backup_base',
+            'min_file_size', 'max_file_size',
+            'enable_content_analysis', 'min_image_pixels_for_ocr', 'min_video_size_for_ocr',
+            'enable_duplicate_detection', 'dedupe_dry_run',
+            'enable_folder_sync',
+            'scan_interval', 'flaky_volume_retries', 'retry_delay',
+            'use_rsync', 'rsync_checksum_mode', 'rsync_size_only',
+            'rsync_additional_args', 'rsync_disable_mmap',
+            'max_drive_usage_percent', 'sync_chunk_subfolders',
+            'sync_chunk_concurrency', 'sync_timeout_minutes',
+            'max_soft_links_per_file',
+            'enable_semantic_categories', 'semantic_confidence_threshold',
+            'ml_content_analysis',
+            'enable_background_backup', 'backup_drive_path', 'backup_directories',
+        }
+        unknown = [k for k in config if k not in KNOWN_KEYS]
+        if unknown:
+            warnings.append(
+                f"Unknown config key(s): {', '.join(sorted(unknown))} — possible typo?"
+            )
+
+        # Check file size constraint
+        min_sz = config.get('min_file_size')
+        max_sz = config.get('max_file_size')
+        if isinstance(min_sz, (int, float)) and isinstance(max_sz, (int, float)):
+            if min_sz > max_sz:
+                errors.append(
+                    f"min_file_size ({min_sz}) must be ≤ max_file_size ({max_sz})"
+                )
+
         # Check for reasonable numeric values
         if 'scan_interval' in config:
             interval = config['scan_interval']
@@ -2672,6 +2984,90 @@ class EnhancedFileOrganizer:
                                     raise ValueError(error_msg)
                         pair['target'] = resolved
     
+    def _filter_unavailable_drives(self) -> None:
+        """
+        After drive placeholder resolution, check which configured drive root paths
+        actually exist on this machine.  Any sync_pair, one_way_pair, or source_folder
+        that references an unavailable drive is silently dropped with a warning.
+
+        This lets the program run normally when a drive is absent — e.g. GoogleDrive
+        was uninstalled, EXTERNAL_DRIVE is unplugged, or ProtonDrive isn't installed.
+
+        Without this, the walk-up heuristic in sync_directories would climb from
+        (say) /Users/rod/GoogleDrive/MyFiles/dev all the way up to /Users/rod and
+        conclude the drive is "online", then create the missing directories locally
+        and copy files into them — silently polluting the home folder.
+        """
+        drives = self.config.get('drives', {})
+        if not drives:
+            return
+
+        # ── Which drives are unavailable? ──────────────────────────────────────
+        unavailable: Dict[str, str] = {}  # drive_name → resolved path
+        for name, raw_path in drives.items():
+            if name.startswith('comment') or not isinstance(raw_path, str):
+                continue
+            resolved = Path(raw_path).expanduser()
+            if not resolved.exists():
+                unavailable[name] = str(resolved)
+                self.logger.warning(
+                    f"Drive '{name}' not found at {resolved} — "
+                    f"pairs and folders that use it will be skipped"
+                )
+
+        if not unavailable:
+            return  # All drives present — nothing to filter
+
+        self.logger.warning(
+            f"Unavailable drive(s): {list(unavailable.keys())}. "
+            f"Sync pairs and source folders that reference them will be skipped this cycle."
+        )
+
+        # ── Helper: does a resolved folder path live under an unavailable drive? ─
+        def _unavailable_drive_for(folder_path: str) -> Optional[str]:
+            for drive_name, drive_root in unavailable.items():
+                if folder_path == drive_root or folder_path.startswith(drive_root + '/'):
+                    return drive_name
+            return None
+
+        # ── Filter sync_pairs ──────────────────────────────────────────────────
+        kept_sync = []
+        for pair in self.config.get('sync_pairs', []):
+            folders = pair.get('folders') or [pair.get('source', ''), pair.get('target', '')]
+            bad = next((d for f in folders if f for d in [_unavailable_drive_for(f)] if d), None)
+            if bad:
+                self.logger.info(f"  Skipping sync pair {folders} — drive '{bad}' not available")
+            else:
+                kept_sync.append(pair)
+        n_dropped = len(self.config.get('sync_pairs', [])) - len(kept_sync)
+        self.config['sync_pairs'] = kept_sync
+
+        # ── Filter one_way_pairs ───────────────────────────────────────────────
+        kept_one_way = []
+        for pair in self.config.get('one_way_pairs', []):
+            folders = pair.get('folders') or [pair.get('source', ''), pair.get('target', '')]
+            bad = next((d for f in folders if f for d in [_unavailable_drive_for(f)] if d), None)
+            if bad:
+                self.logger.info(f"  Skipping one-way pair {folders} — drive '{bad}' not available")
+            else:
+                kept_one_way.append(pair)
+        n_dropped += len(self.config.get('one_way_pairs', [])) - len(kept_one_way)
+        self.config['one_way_pairs'] = kept_one_way
+
+        # ── Filter source_folders ──────────────────────────────────────────────
+        original_sources = self.config.get('source_folders', [])
+        kept_sources = []
+        for f in original_sources:
+            bad = _unavailable_drive_for(f)
+            if bad:
+                self.logger.info(f"  Skipping source_folder '{f}' — drive '{bad}' not available")
+            else:
+                kept_sources.append(f)
+        self.config['source_folders'] = kept_sources
+
+        if n_dropped:
+            self.logger.warning(f"Dropped {n_dropped} pair(s) due to unavailable drives.")
+
     def _resolve_path(self, path: str) -> str:
         """Resolve a path containing drive placeholders (uses resolved drives)."""
         drives = self.config.get('drives', {})
@@ -2719,7 +3115,7 @@ class EnhancedFileOrganizer:
             # File handler - truncate log in production mode
             log_file = Path.home() / '.file_organizer.log'
             log_mode = 'a' if self.test_mode else 'w'  # Append in test mode, truncate in production
-            file_handler = logging.FileHandler(log_file, mode=log_mode)
+            file_handler = RotatingFileHandler(log_file, maxBytes=5 * 1024 * 1024, backupCount=3, mode=log_mode)
             file_handler.addFilter(pytorch_filter)
             file_handler.setFormatter(console_formatter)
             logger.addHandler(file_handler)
@@ -2771,11 +3167,13 @@ class EnhancedFileOrganizer:
         }
     
     def _save_progress(self):
-        """Save current progress to file."""
+        """Save current progress to file (atomic write)."""
         try:
             self.progress['timestamp'] = time.time()
-            with open(self.progress_file, 'w') as f:
+            tmp = self.progress_file.with_suffix('.json.tmp')
+            with open(tmp, 'w') as f:
                 json.dump(self.progress, f, indent=2)
+            tmp.rename(self.progress_file)
             self.logger.debug(f"Progress saved: {self.progress['current_step']}")
         except Exception as e:
             self.logger.warning(f"Could not save progress: {e}")
@@ -2799,7 +3197,310 @@ class EnhancedFileOrganizer:
             'deduplication_completed': False,
             'backup_completed': False
         }
-    
+
+    # ------------------------------------------------------------------
+    # State cache helpers (incremental scanning)
+    # ------------------------------------------------------------------
+
+    def _get_config_hash(self) -> str:
+        """Return an MD5 of the config keys that affect which symlinks are created.
+
+        If any of these change between runs the cached analysis is invalid and
+        the whole cache is discarded so every file gets re-processed.
+        """
+        key_values = {k: self.config.get(k, d) for k, d in [
+            ('enable_content_analysis', True),
+            ('max_soft_links_per_file', 6),
+            ('semantic_confidence_threshold', 0.35),
+            ('min_file_size', 1024),
+            ('max_file_size', 104857600),
+        ]}
+        return hashlib.md5(json.dumps(key_values, sort_keys=True).encode()).hexdigest()
+
+    def _load_state_cache(self) -> None:
+        """Load the per-file state cache from disk into self._state_cache.
+
+        The cache maps str(absolute_path) → [mtime, size, [rel_link, ...]]
+        where rel_link paths are relative to output_base.
+
+        Test mode: always starts fresh (deletes any leftover cache file).
+        Production: discards the cache if the version or config_hash changed.
+        """
+        if self.test_mode:
+            if self._state_cache_file.exists():
+                try:
+                    self._state_cache_file.unlink()
+                    self.logger.info("Cleared stale test-mode state cache")
+                except Exception as e:
+                    self.logger.warning(f"Could not clear test state cache: {e}")
+            self._state_cache = {}
+            return
+
+        if not self._state_cache_file.exists():
+            self._state_cache = {}
+            return
+
+        try:
+            with open(self._state_cache_file, 'r') as f:
+                data = json.load(f)
+
+            if data.get('version') != 1:
+                self.logger.info("State cache version mismatch — starting fresh")
+                self._state_cache = {}
+                return
+
+            if data.get('config_hash') != self._get_config_hash():
+                self.logger.info("State cache invalidated (config changed) — starting fresh")
+                self._state_cache = {}
+                return
+
+            self._state_cache = data.get('files', {})
+            self.logger.info(
+                f"Loaded state cache: {len(self._state_cache)} entries "
+                f"from {self._state_cache_file}"
+            )
+        except Exception as e:
+            self.logger.warning(f"Could not load state cache ({e}) — starting fresh")
+            self._state_cache = {}
+
+    def _save_state_cache(self) -> None:
+        """Atomically persist self._state_cache to disk.
+
+        Uses a write-to-tmp-then-rename approach so a mid-write crash never
+        leaves a corrupt cache file.  Called after each source_folder scan
+        completes (same cadence as _save_progress) and after Steps 2/2b.
+        """
+        try:
+            data = {
+                'version': 1,
+                'config_hash': self._get_config_hash(),
+                'files': self._state_cache,
+            }
+            tmp = self._state_cache_file.with_suffix('.json.tmp')
+            with open(tmp, 'w') as f:
+                json.dump(data, f, separators=(',', ':'))  # compact — no indent
+            tmp.rename(self._state_cache_file)
+            self.logger.debug(f"State cache saved: {len(self._state_cache)} entries")
+        except Exception as e:
+            self.logger.warning(f"Could not save state cache: {e}")
+
+    def _save_cycle_summary(self, timings: dict) -> None:
+        """Persist _cycle_stats + phase timings for display by --stats."""
+        try:
+            data = {'timestamp': time.time(), **self._cycle_stats, **timings}
+            tmp = self._last_cycle_file.with_suffix('.json.tmp')
+            with open(tmp, 'w') as f:
+                json.dump(data, f, indent=2)
+            tmp.rename(self._last_cycle_file)
+        except Exception as e:
+            self.logger.warning(f"Could not save cycle summary: {e}")
+
+    def _remove_file_links(self, file_key: str, old_link_rel_paths: List[str]) -> int:
+        """Delete stale symlinks recorded in the cache for a file that has changed.
+
+        Args:
+            file_key: str(absolute_path), used as key in file_link_counts.
+            old_link_rel_paths: paths relative to output_base stored in the
+                cache entry, e.g. ["documents/foo.pdf", "2024/foo.pdf"].
+
+        Returns:
+            Number of symlinks successfully removed.
+        """
+        output_base = self._get_output_base()
+        removed = 0
+        for rel_path in old_link_rel_paths:
+            link_path = output_base / rel_path
+            try:
+                if link_path.is_symlink():
+                    link_path.unlink()
+                    removed += 1
+                    self.logger.debug(f"Removed stale link: {link_path}")
+            except Exception as e:
+                self.logger.warning(f"Could not remove stale link {link_path}: {e}")
+
+        if removed:
+            self.file_link_counts[file_key] = max(
+                0, self.file_link_counts.get(file_key, 0) - removed
+            )
+            self.logger.info(
+                f"Removed {removed} stale link(s) for changed file: "
+                f"{Path(file_key).name}"
+            )
+        return removed
+
+    def _prune_deleted_files_from_cache(self, scanned_folder: Path) -> None:
+        """Remove cache entries for source files deleted since the last scan.
+
+        Called after scan_directory() finishes for scanned_folder. Any file
+        whose cache key falls under that folder but was not visited during
+        the scan is assumed deleted — its entry is removed, its symlinks in
+        output_base are torn down, and any now-empty category directories are
+        removed (deepest-first so parents become candidates too).
+        """
+        folder_prefix = str(scanned_folder) + os.sep
+        deleted_keys = [
+            key for key in self._state_cache
+            if key.startswith(folder_prefix) and key not in self.processed_files
+        ]
+        if not deleted_keys:
+            return
+
+        output_base = self._get_output_base()
+        affected_dirs: set = set()
+
+        for file_key in deleted_keys:
+            cached = self._state_cache.pop(file_key)
+            old_links = cached[2] if len(cached) > 2 else []
+            if old_links:
+                self._remove_file_links(file_key, old_links)
+                for rel in old_links:
+                    affected_dirs.add((output_base / rel).parent)
+            self.file_link_counts.pop(file_key, None)
+
+        # Remove empty category directories, deepest first so parent dirs
+        # become candidates after their children are removed.
+        for d in sorted(affected_dirs, key=lambda p: len(p.parts), reverse=True):
+            if d == output_base or not d.is_dir():
+                continue
+            try:
+                if not any(d.iterdir()):
+                    d.rmdir()
+                    self._cycle_stats['dirs_cleaned'] += 1
+                    self.logger.debug(f"Removed empty directory: {d}")
+            except OSError:
+                pass
+
+        self._cycle_stats['files_pruned'] += len(deleted_keys)
+        self.logger.info(
+            f"Pruned {len(deleted_keys)} deleted file(s) from cache under {scanned_folder}"
+        )
+
+    def _update_state_cache_for_file(
+        self, file_key: str, file_path: Path, link_rel_paths: List[str]
+    ) -> None:
+        """Write (or overwrite) the cache entry for file_key with current stat.
+
+        Called after process_file() finishes analysis (whether or not any
+        links were created).  link_rel_paths is [] when no links were made —
+        that empty list is what allows Gate 2 in process_file() to skip
+        re-analysis on the next run.
+        """
+        try:
+            st = file_path.stat()
+            self._state_cache[file_key] = [st.st_mtime, st.st_size, link_rel_paths]
+        except Exception as e:
+            self.logger.debug(f"Could not stat {file_path} for cache update: {e}")
+
+    def _append_link_to_cache(self, file_key: str, rel_link: str) -> None:
+        """Append a link path to an existing cache entry (no-op if entry absent).
+
+        Called from Steps 2 and 2b in run_full_cycle() when keyword/semantic
+        category links are created after process_file() has already written
+        the initial cache entry.
+        """
+        entry = self._state_cache.get(file_key)
+        if entry is not None and len(entry) > 2:
+            if rel_link not in entry[2]:
+                entry[2].append(rel_link)
+
+    def print_stats(self) -> None:
+        """Print a human-readable report derived from the state cache."""
+        cache = self._state_cache
+        cache_file = self._state_cache_file
+        output_base = Path(self.config.get('output_base', '~/organized')).expanduser()
+
+        # Cache file age
+        if cache_file.exists():
+            age_secs = time.time() - cache_file.stat().st_mtime
+            if age_secs < 3600:
+                age_str = f"{int(age_secs // 60)}m ago"
+            elif age_secs < 86400:
+                age_str = f"{age_secs / 3600:.1f}h ago"
+            else:
+                age_str = f"{age_secs / 86400:.1f}d ago"
+            cache_size = cache_file.stat().st_size
+            cache_size_str = (
+                f"{cache_size / 1024:.1f} KB" if cache_size < 1_048_576
+                else f"{cache_size / 1_048_576:.1f} MB"
+            )
+        else:
+            age_str = "not found"
+            cache_size_str = "—"
+
+        total = len(cache)
+        files_with_links = 0
+        total_links = 0
+        category_counts: dict = {}
+
+        for entry in cache.values():
+            links = entry[2] if len(entry) > 2 else []
+            if links:
+                files_with_links += 1
+                total_links += len(links)
+                for rel in links:
+                    # First path component is the top-level category dir
+                    top = Path(rel).parts[0] if Path(rel).parts else "—"
+                    category_counts[top] = category_counts.get(top, 0) + 1
+
+        files_no_links = total - files_with_links
+        avg_links = (total_links / files_with_links) if files_with_links else 0.0
+
+        top_categories = sorted(category_counts.items(), key=lambda x: x[1], reverse=True)[:15]
+
+        # Last cycle section (if available)
+        if self._last_cycle_file.exists():
+            try:
+                with open(self._last_cycle_file) as f:
+                    lc = json.load(f)
+                age_secs = time.time() - lc.get('timestamp', 0)
+                def _fmt(s):
+                    if s < 60:   return f"{s:.0f}s"
+                    if s < 3600: return f"{s/60:.1f}m"
+                    return f"{s/3600:.1f}h"
+                total_scanned = (lc.get('gate1_skipped', 0) + lc.get('gate2_skipped', 0)
+                                 + lc.get('gate3_updated', 0) + lc.get('new_files', 0))
+                print(f"\n{'─' * 52}")
+                print(f"  Last cycle: {_fmt(age_secs)} ago  "
+                      f"(total: {_fmt(lc.get('elapsed_total', 0))})")
+                print(f"{'─' * 52}")
+                print(f"  Files scanned:       {total_scanned:>8,}")
+                print(f"    Already organized: {lc.get('gate1_skipped', 0):>8,}")
+                print(f"    Unchanged, skip:   {lc.get('gate2_skipped', 0):>8,}")
+                print(f"    Updated:           {lc.get('gate3_updated', 0):>8,}")
+                print(f"    New:               {lc.get('new_files', 0):>8,}")
+                print(f"  Links created:       {lc.get('links_created', 0):>8,}")
+                if lc.get('files_pruned', 0):
+                    print(f"  Files pruned:        {lc.get('files_pruned', 0):>8,}")
+                print(f"  Timing:")
+                print(f"    Scan & organize:   {_fmt(lc.get('elapsed_scan', 0)):>8}")
+                print(f"    Keyword links:     {_fmt(lc.get('elapsed_keywords', 0)):>8}")
+                print(f"    Semantic links:    {_fmt(lc.get('elapsed_semantic', 0)):>8}")
+                print(f"    Folder sync:       {_fmt(lc.get('elapsed_sync', 0)):>8}")
+                print(f"    Deduplication:     {_fmt(lc.get('elapsed_dedup', 0)):>8}")
+            except Exception:
+                pass  # corrupt or missing — silently skip
+
+        print(f"\n{'─' * 52}")
+        print(f"  file_organiser  ·  cache stats")
+        print(f"{'─' * 52}")
+        print(f"  Cache file : {cache_file}")
+        print(f"  Cache size : {cache_size_str}  (updated {age_str})")
+        print(f"  Output dir : {output_base}")
+        print(f"{'─' * 52}")
+        print(f"  Files indexed       : {total:>8,}")
+        print(f"  Files with symlinks : {files_with_links:>8,}")
+        print(f"  Files without       : {files_no_links:>8,}")
+        print(f"  Total symlinks      : {total_links:>8,}")
+        print(f"  Avg links/file      : {avg_links:>8.1f}")
+        if top_categories:
+            print(f"{'─' * 52}")
+            print(f"  Top categories (by symlink count):")
+            for cat, count in top_categories:
+                bar_len = int(count / top_categories[0][1] * 20)
+                bar = "█" * bar_len
+                print(f"    {cat:<22} {count:>6,}  {bar}")
+        print(f"{'─' * 52}\n")
+
     def _safe_path_operation(self, operation, *args, **kwargs):
         """Safely execute path operations with retry logic for flaky volumes."""
         for attempt in range(self.config['flaky_volume_retries']):
@@ -2813,58 +3514,99 @@ class EnhancedFileOrganizer:
                     self.logger.error(f"Path operation failed after {self.config['flaky_volume_retries']} attempts: {e}")
                     raise
     
+    def _setup_exclude_cache(self) -> None:
+        """Pre-compute exclusion structures once so should_exclude_path() avoids
+        repeated config lookups and list concatenation on every file/dir call.
+
+        Must be called after all config overrides (test-mode patches etc.) are applied.
+        """
+        # softlink_backup_base — always excluded; use a string prefix for speed
+        self._excl_organised_prefix = str(self._get_organised_base())
+
+        # Absolute path prefixes to exclude (exclude_folders)
+        self._excl_folders: List[str] = list(self.config.get('exclude_folders', []))
+
+        # exclude_patterns: file/path patterns (.DS_Store, *.pyc, …)
+        # Plain patterns keep substring matching (users may use path fragments here).
+        # Wildcard patterns are matched against each path component via fnmatch.
+        excl = self.config.get('exclude_patterns', [])
+        self._excl_wildcard: List[str] = [p for p in excl if '*' in p or '?' in p]
+        self._excl_plain: List[str] = [p for p in excl if '*' not in p and '?' not in p]
+
+        # softlink_folder_patterns + empty_folder_patterns split into three groups:
+        folder_pats = (
+            self.config.get('softlink_folder_patterns', []) +
+            self.config.get('empty_folder_patterns', [])
+        )
+        # 1. Single-component patterns (no '/', no wildcards): exact path-component match.
+        #    Prevents "env" from matching "environments".
+        self._excl_folder_names: set = {
+            p for p in folder_pats
+            if '*' not in p and '?' not in p and '/' not in p and os.sep not in p
+        }
+        # 2. Wildcard patterns: fnmatch against each path component.
+        self._excl_folder_wildcards: List[str] = [
+            p for p in folder_pats if '*' in p or '?' in p
+        ]
+        # 3. Multi-component patterns (e.g. "priv/static", "tmp/cache"): substring match.
+        #    A path separator in the pattern means we're matching a path segment sequence,
+        #    so substring matching against the full path string is correct here.
+        self._excl_folder_substrings: List[str] = [
+            p for p in folder_pats
+            if ('/' in p or os.sep in p) and '*' not in p and '?' not in p
+        ]
+
+        # File extension exclusions — set for O(1) lookup
+        self._excl_extensions: set = set(self.config.get('exclude_extensions', []))
+        self._excl_min_size: int = self.config.get('min_file_size', 0)
+
     def should_exclude_path(self, path: Path) -> bool:
         """Check if path should be excluded from processing."""
         path_str = str(path)
-        
-        # CRITICAL: Always exclude softlink_backup_base (where excluded folders are backed up)
-        organised_path = self._get_organised_base()
-        try:
-            if path.is_relative_to(organised_path) or organised_path in path.parents:
+
+        # CRITICAL: Always exclude softlink_backup_base (where excluded folders are backed up).
+        # String prefix check is faster than is_relative_to() + path.parents traversal.
+        org = self._excl_organised_prefix
+        if path_str == org or path_str.startswith(org + os.sep):
+            return True
+
+        # Check exclude_folders (absolute path prefixes)
+        for folder in self._excl_folders:
+            if path_str.startswith(folder):
                 return True
-        except ValueError:
-            # Path is not relative, check if organised appears in path
-            if 'organised' in path_str and str(organised_path) in path_str:
-                return True
-        
-        # Check exclude_folders (absolute paths) - optional, defaults to empty list
-        exclude_folders = self.config.get('exclude_folders', [])
-        for exclude in exclude_folders:
-            if path_str.startswith(exclude):
-                return True
-        
-        # Check all exclude patterns (exclude_patterns, softlink_folder_patterns, empty_folder_patterns)
-        import fnmatch
-        exclude_patterns = self.config.get('exclude_patterns', [])
-        softlink_patterns = self.config.get('softlink_folder_patterns', [])
-        empty_patterns = self.config.get('empty_folder_patterns', [])
-        all_patterns = exclude_patterns + softlink_patterns + empty_patterns
-        
+
+        # Check softlink/empty-folder patterns.
         path_parts = path.parts
-        for pattern in all_patterns:
-            if '*' in pattern or '?' in pattern:
-                for part in path_parts:
-                    if fnmatch.fnmatch(part, pattern):
-                        return True
-            else:
-                if pattern in path_str:
-                    return True
-        
-        # Check exclude_extensions
-        if path.is_file():
-            extension = path.suffix.lower()
-            if extension in self.config.get('exclude_extensions', []):
+        for part in path_parts:
+            if part in self._excl_folder_names:          # exact component match
                 return True
-            
-            # Check minimum file size (skip tiny files like icons)
-            min_size = self.config.get('min_file_size', 0)
-            if min_size > 0:
+            for pat in self._excl_folder_wildcards:      # wildcard component match
+                if fnmatch.fnmatch(part, pat):
+                    return True
+        for substr in self._excl_folder_substrings:      # multi-component substring match
+            if substr in path_str:
+                return True
+
+        # Check exclude_patterns: wildcard against components, plain as substring
+        for pat in self._excl_wildcard:
+            for part in path_parts:
+                if fnmatch.fnmatch(part, pat):
+                    return True
+        for plain in self._excl_plain:
+            if plain in path_str:
+                return True
+
+        # File-specific checks
+        if path.is_file():
+            if path.suffix.lower() in self._excl_extensions:
+                return True
+            if self._excl_min_size > 0:
                 try:
-                    if path.stat().st_size < min_size:
+                    if path.stat().st_size < self._excl_min_size:
                         return True
                 except Exception:
                     pass
-        
+
         return False
     
     def classify_by_type(self, file_path: Path) -> List[str]:
@@ -3196,9 +3938,22 @@ class EnhancedFileOrganizer:
             # OCR for images
             elif extension in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp']:
                 image = Image.open(file_path)
-                
+
+                # Guard: skip OCR on images too small to contain readable text.
+                # PIL.Image.open() is lazy — image.size reads only the header, no pixel decoding.
+                # Covers icons, favicons, and thumbnails that would waste EasyOCR/CLIP/Tesseract.
+                min_pixels = self.config.get('min_image_pixels_for_ocr', 10_000)  # default 100×100
+                if min_pixels > 0:
+                    width, height = image.size
+                    if width * height < min_pixels:
+                        self.logger.debug(
+                            f"Skipping OCR on {file_path.name} — image too small "
+                            f"({width}×{height}={width*height} px < {min_pixels} px threshold)"
+                        )
+                        return ""
+
                 all_text = []
-                
+
                 # Method 1: Try EasyOCR first (better with artistic text)
                 easyocr_reader = self.content_analyzer.get_easyocr_reader()
                 if easyocr_reader:
@@ -3290,6 +4045,15 @@ class EnhancedFileOrganizer:
             
             # Video files - extract text from frames
             elif extension in ['.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.m4v'] and cv2 and pytesseract:
+                # Guard: skip frame extraction on very small video files (stubs, corrupted
+                # containers, or near-empty clips — unlikely to have readable on-screen text).
+                min_video_bytes = self.config.get('min_video_size_for_ocr', 100 * 1024)  # default 100 KB
+                if min_video_bytes > 0 and file_path.stat().st_size < min_video_bytes:
+                    self.logger.debug(
+                        f"Skipping frame OCR on {file_path.name} — "
+                        f"file too small ({file_path.stat().st_size} B < {min_video_bytes} B threshold)"
+                    )
+                    return ""
                 self.logger.info(f"Extracting text from video: {file_path.name}")
                 return self.extract_text_from_video(file_path)
                 
@@ -3298,95 +4062,173 @@ class EnhancedFileOrganizer:
             
         return ""
     
-    def create_soft_link(self, source_path: Path, target_folder: str, target_name: str) -> bool:
-        """Create a soft link from source to target folder."""
+    def create_soft_link(
+        self, source_path: Path, target_folder: str, target_name: str
+    ) -> Optional[str]:
+        """Create a soft link from source to target folder.
+
+        Returns the link path relative to output_base (e.g. "documents/foo.pdf")
+        when a link is created or already exists correctly, None otherwise.
+        The relative path is stored in the state cache so stale links can be
+        cleaned up when a file changes.
+        """
         try:
-            # Check if we've already created too many links for this file
             file_key = str(source_path)
             current_count = self.file_link_counts[file_key]
-            
+
             if current_count >= self.max_links_per_file:
-                self.logger.debug(f"Skipping link for {source_path.name} - already has {current_count} links (max: {self.max_links_per_file})")
-                return False
-            
-            target_dir = Path(self.config['output_base']) / target_folder
+                self.logger.debug(
+                    f"Skipping link for {source_path.name} - already has "
+                    f"{current_count} links (max: {self.max_links_per_file})"
+                )
+                return None
+
+            target_dir = self._get_output_base() / target_folder
             target_dir.mkdir(parents=True, exist_ok=True)
-            
-            target_path = target_dir / target_name
-            
-            # Check if link already exists and points to correct location
-            if target_path.is_symlink():
-                try:
-                    existing_target = os.readlink(target_path)
-                    relative_source = os.path.relpath(source_path, target_dir)
-                    if existing_target == relative_source:
-                        # Link already exists and is correct - skip
-                        return True
-                except:
-                    pass
-                # Link exists but is wrong - remove it
-                target_path.unlink()
-            elif target_path.exists():
-                # Regular file exists - remove it
-                target_path.unlink()
-            
-            # Create relative symlink
+
+            stem = Path(target_name).stem
+            suffix = Path(target_name).suffix
             relative_source = os.path.relpath(source_path, target_dir)
+
+            # Find the right slot: prefer the natural name, fall back to
+            # "stem (2).ext", "stem (3).ext", … to avoid last-writer-wins.
+            # First scan for an existing slot already pointing to our source
+            # (handles re-runs where we previously got a numbered slot).
+            target_path = None
+            rel = None
+            for i in range(1, self.max_links_per_file + 10):
+                candidate_name = target_name if i == 1 else f"{stem} ({i}){suffix}"
+                candidate = target_dir / candidate_name
+                if candidate.is_symlink():
+                    try:
+                        if os.readlink(candidate) == relative_source:
+                            # Already have a correct link here — reuse it.
+                            return str(Path(target_folder) / candidate_name)
+                    except Exception:
+                        pass
+                    # Occupied by someone else — keep searching.
+                elif not candidate.exists():
+                    # Free slot found.
+                    target_path = candidate
+                    rel = str(Path(target_folder) / candidate_name)
+                    break
+
+            if target_path is None:
+                self.logger.debug(
+                    f"No free slot found for {source_path.name} in {target_folder}"
+                )
+                return None
+
+            if i > 1:
+                self.logger.debug(
+                    f"Name collision: {target_name} taken in {target_folder}; "
+                    f"using {target_path.name}"
+                )
+
+            # Create relative symlink
             target_path.symlink_to(relative_source)
-            
-            # Increment link count for this file
             self.file_link_counts[file_key] += 1
-            
-            self.logger.debug(f"Created soft link: {target_path} -> {relative_source} (file now has {self.file_link_counts[file_key]} links)")
-            return True
-            
+            self._cycle_stats['links_created'] += 1
+            self.logger.debug(
+                f"Created soft link: {target_path} -> {relative_source} "
+                f"(file now has {self.file_link_counts[file_key]} links)"
+            )
+            return rel
+
         except Exception as e:
-            self.logger.error(f"Failed to create soft link {source_path} -> {target_folder}/{target_name}: {e}")
-            return False
+            self.logger.error(
+                f"Failed to create soft link {source_path} -> "
+                f"{target_folder}/{target_name}: {e}"
+            )
+            return None
     
     def process_file(self, file_path: Path) -> None:
         """Process a single file with dynamic content analysis."""
         if str(file_path) in self.processed_files:
             return
-        
+
         # Skip macOS metadata files (files starting with ._)
-        # These are resource fork/metadata files that macOS creates
         if file_path.name.startswith('._'):
             return
-        
+
         if self.should_exclude_path(file_path):
             return
-        
+
         file_key = str(file_path)
-        
-        # If this file already has symlinks in ~/organized, it was processed
-        # in a previous run — skip the expensive OCR / content extraction.
+
+        # Periodic progress indicator — log every 500 files examined.
+        self._scan_file_count += 1
+        if self._scan_file_count % 500 == 0:
+            elapsed = time.time() - self._scan_start_time
+            rate = int(self._scan_file_count / elapsed) if elapsed > 0 else 0
+            self.logger.info(
+                f"  ... {self._scan_file_count:,} files examined  ({rate:,}/sec)"
+            )
+
+        # Gate 1: file already has symlinks — was fully processed in a previous run.
         if self.file_link_counts.get(file_key, 0) > 0:
             self.processed_files.add(file_key)
+            self._cycle_stats['gate1_skipped'] += 1
             return
-        
+
+        # Gates 2 & 3: consult the state cache.
+        cached = self._state_cache.get(file_key)
+        is_new_file = (cached is None)
+        if cached is not None:
+            try:
+                st = file_path.stat()
+                cached_mtime = cached[0]
+                cached_size = cached[1]
+                old_links = cached[2] if len(cached) > 2 else []
+
+                if abs(st.st_mtime - cached_mtime) < 0.01 and st.st_size == cached_size:
+                    # Gate 2: file unchanged since last analysis.
+                    if not old_links:
+                        # Was analyzed before and produced no links — safe to skip.
+                        self.processed_files.add(file_key)
+                        self._cycle_stats['gate2_skipped'] += 1
+                        return
+                    # Cache says links exist but file_link_counts==0 means
+                    # ~/organized was cleared externally.  Fall through to
+                    # re-analyze; don't try to remove the already-gone links.
+                else:
+                    # Gate 3: file has changed — tear down stale links then re-analyze.
+                    if old_links:
+                        self._remove_file_links(file_key, old_links)
+                    del self._state_cache[file_key]
+                    self._cycle_stats['gate3_updated'] += 1
+            except OSError:
+                return  # file vanished between iterdir and stat
+
         try:
             # Extract content for analysis
             content = ""
             if self.config.get('enable_content_analysis', True):
                 content = self.extract_text_content(file_path)
-            
+
             # Analyze file with dynamic content analyzer
-            # This learns keywords from both path and content
             keywords = self.content_analyzer.analyze_file(file_path, content)
-            
-            # Classify file by type and year (these don't count toward max_categories)
+
+            # Classify file by type and year
             classifications = set()
             classifications.update(self.classify_by_type(file_path))
             classifications.update(self.classify_by_year(file_path))
-            
-            # Create soft links for basic classifications
+
+            # Create soft links and collect their relative paths for the cache.
+            new_link_rel_paths: List[str] = []
             for classification in classifications:
-                self.create_soft_link(file_path, classification, file_path.name)
-            
+                rel = self.create_soft_link(file_path, classification, file_path.name)
+                if rel is not None:
+                    new_link_rel_paths.append(rel)
+
             self.processed_files.add(file_key)
             self._newly_processed_files.add(file_key)
-            
+            if is_new_file:
+                self._cycle_stats['new_files'] += 1
+
+            # Persist analysis result so next run can skip this file if unchanged.
+            self._update_state_cache_for_file(file_key, file_path, new_link_rel_paths)
+
         except Exception as e:
             self.logger.error(f"Error processing file {file_path}: {e}")
     
@@ -3399,8 +4241,8 @@ class EnhancedFileOrganizer:
         if hasattr(self, 'running') and not self.running:
             return
         
-        self.logger.info(f"Scanning directory: {directory}")
-        
+        self.logger.debug(f"Scanning directory: {directory}")
+
         try:
             for item in directory.iterdir():
                 # Check if we should stop
@@ -3747,8 +4589,13 @@ class EnhancedFileOrganizer:
         
         if duplicates:
             self.logger.info(f"Found {len(duplicates)} groups of duplicate files")
-            removed = self.folder_sync.remove_duplicates(duplicates, keep_newest=True)
-            self.logger.info(f"Removed {removed} duplicate files")
+            dry_run = self.config.get('dedupe_dry_run', True)
+            if dry_run:
+                self.logger.info("Deduplication running in DRY RUN mode — no files will be deleted. "
+                                 "Set 'dedupe_dry_run: false' in config to enable real deletion.")
+            removed = self.folder_sync.remove_duplicates(duplicates, keep_newest=True, dry_run=dry_run)
+            action = "Would remove" if dry_run else "Removed"
+            self.logger.info(f"{action} {removed} duplicate files")
         
         # Mark as completed
         self.progress['deduplication_completed'] = True
@@ -3792,11 +4639,21 @@ class EnhancedFileOrganizer:
         if not hasattr(self, 'progress') or self.progress is None:
             self.progress = self._load_progress()
         
+        # Reset per-cycle stats and progress counter
+        self._cycle_stats = {k: 0 for k in self._cycle_stats}
+        self._scan_file_count = 0
+        self._scan_start_time = time.time()
+        self.processed_files = set()
+        self._newly_processed_files = set()
+        _t_start = time.time()
+        _t_scan = _t_kw = _t_sem = _t_sync = _t_dedup = _t_start
+
         self.logger.info("=" * 80)
         self.logger.info("Starting full organization cycle")
         self.logger.info("=" * 80)
         
         # Step 1: Scan and organize files FIRST (gives immediate value before time-consuming operations)
+        _t_scan = time.time()
         self.logger.info("Step 1: Scanning and organizing files...")
         
         # Get source folders (use empty list if not configured)
@@ -3823,14 +4680,17 @@ class EnhancedFileOrganizer:
                 if folder_path.exists():
                     self.logger.info(f"Scanning folder {i+1}/{len(scan_folders)}: {folder}")
                     self._safe_path_operation(self.scan_directory, folder_path)
-                    
+                    self._prune_deleted_files_from_cache(folder_path)
+
                     # Mark this folder as completed
                     completed_scan_folders.append(i)
                     self.progress['scan_folders_completed'] = completed_scan_folders
                     self.progress['current_step'] = 'scan'
                     self._save_progress()
+                    self._save_state_cache()
         
         # Step 2: Discover content categories based on learned keywords
+        _t_kw = time.time()
         if hasattr(self, 'running') and not self.running:
             return
         if self.config.get('ml_content_analysis', {}).get('enabled', True):
@@ -3847,7 +4707,9 @@ class EnhancedFileOrganizer:
                 for file_path_str in file_paths:
                     file_path = Path(file_path_str)
                     if file_path.exists():
-                        self.create_soft_link(file_path, category_name, file_path.name)
+                        rel = self.create_soft_link(file_path, category_name, file_path.name)
+                        if rel:
+                            self._append_link_to_cache(file_path_str, rel)
             
             # Save discovered categories for review
             categories_file = Path.home() / '.file_organizer_discovered_categories.json'
@@ -3855,6 +4717,7 @@ class EnhancedFileOrganizer:
             self.logger.info(f"Discovered {len(discovered_categories)} content categories")
         
         # Step 2b: Semantic categorization — group files into broad categories
+        _t_sem = time.time()
         if hasattr(self, 'running') and not self.running:
             return
         if self.config.get('enable_semantic_categories', True):
@@ -3871,20 +4734,25 @@ class EnhancedFileOrganizer:
                     for fp_str in file_paths:
                         fp = Path(fp_str)
                         if fp.exists():
-                            self.create_soft_link(fp, category_name, fp.name)
+                            rel = self.create_soft_link(fp, category_name, fp.name)
+                            if rel:
+                                self._append_link_to_cache(fp_str, rel)
                 self.logger.info(f"Created semantic links across {len(semantic_groups)} broad categories")
             else:
                 self.logger.info("Step 2b: No new files to classify semantically")
         
+        self._save_state_cache()
         self.logger.info(f"✓ Soft link organization complete! Check {self.config['output_base']}")
-        
+
         # Step 3: Sync configured folders (time-consuming, runs after organization)
+        _t_sync = time.time()
         if hasattr(self, 'running') and not self.running:
             return
         self.logger.info("Step 3: Syncing configured folders (this may take a while)...")
         self.sync_configured_folders()
         
         # Step 4: Remove duplicates (time-consuming, runs after organization)
+        _t_dedup = time.time()
         if hasattr(self, 'running') and not self.running:
             return
         self.logger.info("Step 4: Scanning for duplicate files (this may take a while)...")
@@ -3898,9 +4766,53 @@ class EnhancedFileOrganizer:
         
         # All steps complete - clear progress
         self._clear_progress()
-        
+
+        # Print end-of-cycle summary
+        _t_done = time.time()
+
+        self._save_cycle_summary({
+            'elapsed_total':    _t_done  - _t_start,
+            'elapsed_scan':     _t_kw    - _t_scan,
+            'elapsed_keywords': _t_sem   - _t_kw,
+            'elapsed_semantic': _t_sync  - _t_sem,
+            'elapsed_sync':     _t_dedup - _t_sync,
+            'elapsed_dedup':    _t_done  - _t_dedup,
+        })
+
+        def _fmt_dur(secs: float) -> str:
+            if secs < 60:   return f"{secs:.0f}s"
+            if secs < 3600: return f"{secs / 60:.1f}m"
+            return f"{secs / 3600:.1f}h"
+
+        s = self._cycle_stats
+        total_scanned = (
+            s['gate1_skipped'] + s['gate2_skipped'] +
+            s['gate3_updated'] + s['new_files']
+        )
+        total_with_links = len([k for k, v in self.file_link_counts.items() if v > 0])
+        total_links = sum(self.file_link_counts.values())
+        output_base = self.config.get('output_base', '~/organized')
         self.logger.info("=" * 80)
         self.logger.info("Full organization cycle complete")
+        self.logger.info("-" * 40)
+        self.logger.info(f"  Files scanned:            {total_scanned:>8,}")
+        self.logger.info(f"    Already organized:      {s['gate1_skipped']:>8,}")
+        self.logger.info(f"    Unchanged, skipped:     {s['gate2_skipped']:>8,}")
+        self.logger.info(f"    Updated (changed):      {s['gate3_updated']:>8,}")
+        self.logger.info(f"    New:                    {s['new_files']:>8,}")
+        self.logger.info(f"  Links created this run:   {s['links_created']:>8,}")
+        self.logger.info(f"  Files pruned (deleted):   {s['files_pruned']:>8,}")
+        if s['dirs_cleaned']:
+            self.logger.info(f"  Empty dirs removed:       {s['dirs_cleaned']:>8,}")
+        self.logger.info(f"  Total elapsed:            {_fmt_dur(_t_done - _t_start):>8}")
+        self.logger.info(f"    Scan & organize:        {_fmt_dur(_t_kw    - _t_scan):>8}")
+        self.logger.info(f"    Keyword links:          {_fmt_dur(_t_sem   - _t_kw  ):>8}")
+        self.logger.info(f"    Semantic links:         {_fmt_dur(_t_sync  - _t_sem ):>8}")
+        self.logger.info(f"    Folder sync:            {_fmt_dur(_t_dedup - _t_sync):>8}")
+        self.logger.info(f"    Deduplication:          {_fmt_dur(_t_done  - _t_dedup):>8}")
+        self.logger.info(f"  Unique files with links:  {total_with_links:>8,}")
+        self.logger.info(f"  Total symlinks:           {total_links:>8,}")
+        self.logger.info(f"  Output: {output_base}")
         self.logger.info("=" * 80)
     
     def run_daemon(self) -> None:
@@ -4266,7 +5178,7 @@ def main():
     bootstrap_logger = logging.getLogger('file_organizer')
     if not bootstrap_logger.handlers:
         bootstrap_logger.setLevel(logging.INFO)
-        handler = logging.FileHandler(log_file, mode='a')
+        handler = RotatingFileHandler(log_file, maxBytes=5 * 1024 * 1024, backupCount=3)
         handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
         bootstrap_logger.addHandler(handler)
     bootstrap_logger.info("Starting file organizer...")
@@ -4295,6 +5207,10 @@ def main():
                        help='Validate configuration file and exit (does not run organizer)')
     parser.add_argument('--cleanup', action='store_true',
                        help='Remove broken and now-excluded symlinks from ~/organized, then exit')
+    parser.add_argument('--stats', action='store_true',
+                       help='Print cache statistics (files indexed, symlinks, top categories) and exit')
+    parser.add_argument('--verify', action='store_true',
+                       help='Check ~/organized for broken symlinks and exit (read-only)')
     # Internal flag used after relaunching as a background process to suppress console output
     parser.add_argument('--internal-daemon', action='store_true', help=argparse.SUPPRESS)
     
@@ -4412,6 +5328,15 @@ def main():
     # Handle cleanup mode
     if args.cleanup:
         organizer.cleanup_organized()
+        return
+
+    # Handle stats mode
+    if args.stats:
+        organizer.print_stats()
+        return
+
+    if args.verify:
+        organizer.verify_organized()
         return
 
     # Execute based on options
