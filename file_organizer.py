@@ -2025,6 +2025,68 @@ class EnhancedFileOrganizer:
         )
         print(f"Total: {total_removed} symlinks removed ({total_broken} broken, {total_excluded} excluded)")
 
+    def verify_organized(self) -> int:
+        """Walk ~/organized and report broken symlinks (read-only).
+
+        Returns the count of broken symlinks found (0 = all healthy).
+        Also cross-references the state cache to surface entries whose
+        recorded symlinks are missing from disk.
+        """
+        output_base = Path(self.config.get('output_base', '~/organized')).expanduser()
+
+        if not output_base.exists():
+            print(f"Output directory does not exist: {output_base}")
+            return 0
+
+        total = broken = 0
+        broken_by_category: dict = {}
+
+        for root, dirs, files in os.walk(output_base):
+            for name in files:
+                link_path = Path(root) / name
+                if not link_path.is_symlink():
+                    continue
+                total += 1
+                try:
+                    target = link_path.resolve()
+                    if not target.exists():
+                        broken += 1
+                        rel = link_path.relative_to(output_base)
+                        cat = rel.parts[0] if rel.parts else "?"
+                        broken_by_category.setdefault(cat, []).append(str(link_path))
+                except Exception:
+                    broken += 1
+
+        # Cross-reference state cache: entries whose first recorded link is absent
+        stale_cache = 0
+        for entry in self._state_cache.values():
+            links = entry[2] if len(entry) > 2 else []
+            if links and not (output_base / links[0]).is_symlink():
+                stale_cache += 1
+
+        print(f"\n{'─' * 52}")
+        print(f"  file_organiser  ·  verify")
+        print(f"{'─' * 52}")
+        print(f"  Directory : {output_base}")
+        print(f"  Symlinks  : {total:,} total,  {broken:,} broken")
+        if stale_cache:
+            print(f"  Cache     : {stale_cache:,} entries with missing symlinks")
+        else:
+            print(f"  Cache     : all recorded symlinks present")
+        if broken_by_category:
+            print(f"{'─' * 52}")
+            print(f"  Broken symlinks by category:")
+            for cat, paths in sorted(broken_by_category.items()):
+                print(f"    {cat:<28} {len(paths):>4} broken")
+            print(f"{'─' * 52}")
+            print(f"  Run --cleanup to remove broken symlinks.")
+        else:
+            print(f"{'─' * 52}")
+            print(f"  All symlinks are healthy.")
+        print(f"{'─' * 52}\n")
+
+        return broken
+
     def _load_config(self) -> Dict:
         """Load configuration from YAML file."""
         if not os.path.exists(self.config_file):
@@ -3097,11 +3159,13 @@ class EnhancedFileOrganizer:
         }
     
     def _save_progress(self):
-        """Save current progress to file."""
+        """Save current progress to file (atomic write)."""
         try:
             self.progress['timestamp'] = time.time()
-            with open(self.progress_file, 'w') as f:
+            tmp = self.progress_file.with_suffix('.json.tmp')
+            with open(tmp, 'w') as f:
                 json.dump(self.progress, f, indent=2)
+            tmp.rename(self.progress_file)
             self.logger.debug(f"Progress saved: {self.progress['current_step']}")
         except Exception as e:
             self.logger.warning(f"Could not save progress: {e}")
@@ -5057,6 +5121,8 @@ def main():
                        help='Remove broken and now-excluded symlinks from ~/organized, then exit')
     parser.add_argument('--stats', action='store_true',
                        help='Print cache statistics (files indexed, symlinks, top categories) and exit')
+    parser.add_argument('--verify', action='store_true',
+                       help='Check ~/organized for broken symlinks and exit (read-only)')
     # Internal flag used after relaunching as a background process to suppress console output
     parser.add_argument('--internal-daemon', action='store_true', help=argparse.SUPPRESS)
     
@@ -5179,6 +5245,10 @@ def main():
     # Handle stats mode
     if args.stats:
         organizer.print_stats()
+        return
+
+    if args.verify:
+        organizer.verify_organized()
         return
 
     # Execute based on options
