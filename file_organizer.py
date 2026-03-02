@@ -3320,6 +3320,71 @@ class EnhancedFileOrganizer:
             if rel_link not in entry[2]:
                 entry[2].append(rel_link)
 
+    def print_stats(self) -> None:
+        """Print a human-readable report derived from the state cache."""
+        cache = self._state_cache
+        cache_file = self._state_cache_file
+        output_base = Path(self.config.get('output_base', '~/organized')).expanduser()
+
+        # Cache file age
+        if cache_file.exists():
+            age_secs = time.time() - cache_file.stat().st_mtime
+            if age_secs < 3600:
+                age_str = f"{int(age_secs // 60)}m ago"
+            elif age_secs < 86400:
+                age_str = f"{age_secs / 3600:.1f}h ago"
+            else:
+                age_str = f"{age_secs / 86400:.1f}d ago"
+            cache_size = cache_file.stat().st_size
+            cache_size_str = (
+                f"{cache_size / 1024:.1f} KB" if cache_size < 1_048_576
+                else f"{cache_size / 1_048_576:.1f} MB"
+            )
+        else:
+            age_str = "not found"
+            cache_size_str = "—"
+
+        total = len(cache)
+        files_with_links = 0
+        total_links = 0
+        category_counts: dict = {}
+
+        for entry in cache.values():
+            links = entry[2] if len(entry) > 2 else []
+            if links:
+                files_with_links += 1
+                total_links += len(links)
+                for rel in links:
+                    # First path component is the top-level category dir
+                    top = Path(rel).parts[0] if Path(rel).parts else "—"
+                    category_counts[top] = category_counts.get(top, 0) + 1
+
+        files_no_links = total - files_with_links
+        avg_links = (total_links / files_with_links) if files_with_links else 0.0
+
+        top_categories = sorted(category_counts.items(), key=lambda x: x[1], reverse=True)[:15]
+
+        print(f"\n{'─' * 52}")
+        print(f"  file_organiser  ·  cache stats")
+        print(f"{'─' * 52}")
+        print(f"  Cache file : {cache_file}")
+        print(f"  Cache size : {cache_size_str}  (updated {age_str})")
+        print(f"  Output dir : {output_base}")
+        print(f"{'─' * 52}")
+        print(f"  Files indexed       : {total:>8,}")
+        print(f"  Files with symlinks : {files_with_links:>8,}")
+        print(f"  Files without       : {files_no_links:>8,}")
+        print(f"  Total symlinks      : {total_links:>8,}")
+        print(f"  Avg links/file      : {avg_links:>8.1f}")
+        if top_categories:
+            print(f"{'─' * 52}")
+            print(f"  Top categories (by symlink count):")
+            for cat, count in top_categories:
+                bar_len = int(count / top_categories[0][1] * 20)
+                bar = "█" * bar_len
+                print(f"    {cat:<22} {count:>6,}  {bar}")
+        print(f"{'─' * 52}\n")
+
     def _safe_path_operation(self, operation, *args, **kwargs):
         """Safely execute path operations with retry logic for flaky volumes."""
         for attempt in range(self.config['flaky_volume_retries']):
@@ -4990,6 +5055,8 @@ def main():
                        help='Validate configuration file and exit (does not run organizer)')
     parser.add_argument('--cleanup', action='store_true',
                        help='Remove broken and now-excluded symlinks from ~/organized, then exit')
+    parser.add_argument('--stats', action='store_true',
+                       help='Print cache statistics (files indexed, symlinks, top categories) and exit')
     # Internal flag used after relaunching as a background process to suppress console output
     parser.add_argument('--internal-daemon', action='store_true', help=argparse.SUPPRESS)
     
@@ -5107,6 +5174,11 @@ def main():
     # Handle cleanup mode
     if args.cleanup:
         organizer.cleanup_organized()
+        return
+
+    # Handle stats mode
+    if args.stats:
+        organizer.print_stats()
         return
 
     # Execute based on options
