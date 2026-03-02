@@ -54,6 +54,7 @@ sys.stderr = MallocStackLoggingFilter(sys.stderr)
 import time
 import hashlib
 import logging
+from logging.handlers import RotatingFileHandler
 import argparse
 import signal
 import threading
@@ -3111,7 +3112,7 @@ class EnhancedFileOrganizer:
             # File handler - truncate log in production mode
             log_file = Path.home() / '.file_organizer.log'
             log_mode = 'a' if self.test_mode else 'w'  # Append in test mode, truncate in production
-            file_handler = logging.FileHandler(log_file, mode=log_mode)
+            file_handler = RotatingFileHandler(log_file, maxBytes=5 * 1024 * 1024, backupCount=3, mode=log_mode)
             file_handler.addFilter(pytorch_filter)
             file_handler.setFormatter(console_formatter)
             logger.addHandler(file_handler)
@@ -5116,7 +5117,7 @@ def main():
     bootstrap_logger = logging.getLogger('file_organizer')
     if not bootstrap_logger.handlers:
         bootstrap_logger.setLevel(logging.INFO)
-        handler = logging.FileHandler(log_file, mode='a')
+        handler = RotatingFileHandler(log_file, maxBytes=5 * 1024 * 1024, backupCount=3)
         handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
         bootstrap_logger.addHandler(handler)
     bootstrap_logger.info("Starting file organizer...")
