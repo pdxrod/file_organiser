@@ -1838,6 +1838,9 @@ class EnhancedFileOrganizer:
         self.processed_files = set()
         self._newly_processed_files = set()  # files analyzed on THIS run (not skipped)
 
+        # Files examined counter for periodic progress logging — reset each cycle
+        self._scan_file_count: int = 0
+
         # Per-cycle stats — reset at the start of each run_full_cycle()
         self._cycle_stats: Dict[str, int] = {
             'gate1_skipped': 0,   # had links already, skipped
@@ -1862,20 +1865,27 @@ class EnhancedFileOrganizer:
 
         The state cache records every link created for each source file as
         [mtime, size, [rel_link_1, ...]]. When the cache is warm we skip the
-        os.walk() entirely — zero I/O, instant startup.
+        os.walk() entirely — just one lstat() per file to verify the first
+        cached link still exists (self-healing if output_base is cleared).
         """
         output_base = Path(self.config['output_base'])
         if not output_base.exists():
             return
 
-        # Fast path: derive counts from state cache (O(n) dict iteration, no I/O).
+        # Fast path: derive counts from state cache (O(n) dict iteration, 1 lstat per file).
+        # We verify the first cached link actually exists on disk so that an externally
+        # cleared output_base doesn't leave Gate 1 permanently blocking re-analysis.
         if self._state_cache:
             count = 0
             for file_key, cached in self._state_cache.items():
                 link_rel_paths = cached[2] if len(cached) > 2 else []
-                if link_rel_paths:
-                    self.file_link_counts[file_key] = len(link_rel_paths)
-                    count += len(link_rel_paths)
+                if not link_rel_paths:
+                    continue
+                # One lstat() per file — far cheaper than walking the whole tree.
+                if not (output_base / link_rel_paths[0]).is_symlink():
+                    continue  # output_base was cleared; skip so scan re-analyzes this file
+                self.file_link_counts[file_key] = len(link_rel_paths)
+                count += len(link_rel_paths)
             if count:
                 self.logger.info(
                     f"Indexed {count} existing symlinks across "
@@ -3836,6 +3846,11 @@ class EnhancedFileOrganizer:
 
         file_key = str(file_path)
 
+        # Periodic progress indicator — log every 500 files examined.
+        self._scan_file_count += 1
+        if self._scan_file_count % 500 == 0:
+            self.logger.info(f"  ... {self._scan_file_count:,} files examined so far this cycle")
+
         # Gate 1: file already has symlinks — was fully processed in a previous run.
         if self.file_link_counts.get(file_key, 0) > 0:
             self.processed_files.add(file_key)
@@ -3912,8 +3927,8 @@ class EnhancedFileOrganizer:
         if hasattr(self, 'running') and not self.running:
             return
         
-        self.logger.info(f"Scanning directory: {directory}")
-        
+        self.logger.debug(f"Scanning directory: {directory}")
+
         try:
             for item in directory.iterdir():
                 # Check if we should stop
@@ -4310,8 +4325,9 @@ class EnhancedFileOrganizer:
         if not hasattr(self, 'progress') or self.progress is None:
             self.progress = self._load_progress()
         
-        # Reset per-cycle stats
+        # Reset per-cycle stats and progress counter
         self._cycle_stats = {k: 0 for k in self._cycle_stats}
+        self._scan_file_count = 0
 
         self.logger.info("=" * 80)
         self.logger.info("Starting full organization cycle")
