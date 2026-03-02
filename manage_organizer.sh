@@ -9,6 +9,13 @@ PID_FILE="/tmp/file_organizer.pid"
 
 cd "$SCRIPT_DIR" || exit 1
 
+# Use venv python if available, otherwise fall back to python3
+if [ -x "$SCRIPT_DIR/venv/bin/python3" ]; then
+    PYTHON="$SCRIPT_DIR/venv/bin/python3"
+else
+    PYTHON="python3"
+fi
+
 case "$1" in
     start)
         echo "Starting File Organizer in PRODUCTION MODE..."
@@ -22,7 +29,7 @@ case "$1" in
         
         # Validate config file before starting (run validation in foreground to show errors)
         echo "Validating configuration file..."
-        VALIDATION_OUTPUT=$(python "$SCRIPT_NAME" --REAL --validate-config 2>&1)
+        VALIDATION_OUTPUT=$($PYTHON "$SCRIPT_NAME" --REAL --validate-config 2>&1)
         VALIDATION_EXIT=$?
         
         if [ $VALIDATION_EXIT -ne 0 ]; then
@@ -36,7 +43,7 @@ case "$1" in
         
         # Config is valid, now start in background
         # Use --no-daemon so Python runs as single process (PID stays valid); logging goes to file
-        nohup python "$SCRIPT_NAME" --REAL --no-daemon > /dev/null 2>&1 &
+        nohup $PYTHON "$SCRIPT_NAME" --REAL --no-daemon > /dev/null 2>&1 &
         PID=$!
         echo $PID > "$PID_FILE"
         
@@ -179,38 +186,38 @@ case "$1" in
     
     test)
         echo "Running single scan in TEST MODE..."
-        python "$SCRIPT_NAME" --scan-once
+        $PYTHON "$SCRIPT_NAME" --scan-once
         ;;
     
     test-real)
         echo "Running single scan in PRODUCTION MODE..."
-        python "$SCRIPT_NAME" --REAL --scan-once
+        $PYTHON "$SCRIPT_NAME" --REAL --scan-once
         ;;
     
     sync)
         echo "Running folder synchronization only (PRODUCTION MODE)..."
-        python "$SCRIPT_NAME" --REAL --sync-only
+        $PYTHON "$SCRIPT_NAME" --REAL --sync-only
         ;;
     
     dedupe)
         echo "Running duplicate detection and removal (PRODUCTION MODE)..."
-        python "$SCRIPT_NAME" --REAL --dedupe-only
+        $PYTHON "$SCRIPT_NAME" --REAL --dedupe-only
         ;;
 
     cleanup)
         echo "Cleaning up broken and excluded symlinks in ~/organized..."
-        python "$SCRIPT_NAME" --REAL --cleanup
+        $PYTHON "$SCRIPT_NAME" --REAL --cleanup
         ;;
 
     gui)
         echo "Starting File Organizer Desktop App..."
         # Try to bring window to front on Mac
         if [[ "$OSTYPE" == "darwin"* ]]; then
-            python "$SCRIPT_DIR/desktop_app.py" &
+            $PYTHON "$SCRIPT_DIR/desktop_app.py" &
             sleep 0.5
             osascript -e 'tell application "System Events" to set frontmost of first process whose name is "Python" to true' 2>/dev/null || true
         else
-            python "$SCRIPT_DIR/desktop_app.py"
+            $PYTHON "$SCRIPT_DIR/desktop_app.py"
         fi
         ;;
 
