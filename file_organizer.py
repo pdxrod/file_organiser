@@ -4586,12 +4586,15 @@ class EnhancedFileOrganizer:
         # Reset per-cycle stats and progress counter
         self._cycle_stats = {k: 0 for k in self._cycle_stats}
         self._scan_file_count = 0
+        _t_start = time.time()
+        _t_scan = _t_kw = _t_sem = _t_sync = _t_dedup = _t_start
 
         self.logger.info("=" * 80)
         self.logger.info("Starting full organization cycle")
         self.logger.info("=" * 80)
         
         # Step 1: Scan and organize files FIRST (gives immediate value before time-consuming operations)
+        _t_scan = time.time()
         self.logger.info("Step 1: Scanning and organizing files...")
         
         # Get source folders (use empty list if not configured)
@@ -4628,6 +4631,7 @@ class EnhancedFileOrganizer:
                     self._save_state_cache()
         
         # Step 2: Discover content categories based on learned keywords
+        _t_kw = time.time()
         if hasattr(self, 'running') and not self.running:
             return
         if self.config.get('ml_content_analysis', {}).get('enabled', True):
@@ -4654,6 +4658,7 @@ class EnhancedFileOrganizer:
             self.logger.info(f"Discovered {len(discovered_categories)} content categories")
         
         # Step 2b: Semantic categorization — group files into broad categories
+        _t_sem = time.time()
         if hasattr(self, 'running') and not self.running:
             return
         if self.config.get('enable_semantic_categories', True):
@@ -4681,12 +4686,14 @@ class EnhancedFileOrganizer:
         self.logger.info(f"✓ Soft link organization complete! Check {self.config['output_base']}")
 
         # Step 3: Sync configured folders (time-consuming, runs after organization)
+        _t_sync = time.time()
         if hasattr(self, 'running') and not self.running:
             return
         self.logger.info("Step 3: Syncing configured folders (this may take a while)...")
         self.sync_configured_folders()
         
         # Step 4: Remove duplicates (time-consuming, runs after organization)
+        _t_dedup = time.time()
         if hasattr(self, 'running') and not self.running:
             return
         self.logger.info("Step 4: Scanning for duplicate files (this may take a while)...")
@@ -4702,6 +4709,13 @@ class EnhancedFileOrganizer:
         self._clear_progress()
 
         # Print end-of-cycle summary
+        _t_done = time.time()
+
+        def _fmt_dur(secs: float) -> str:
+            if secs < 60:   return f"{secs:.0f}s"
+            if secs < 3600: return f"{secs / 60:.1f}m"
+            return f"{secs / 3600:.1f}h"
+
         s = self._cycle_stats
         total_scanned = (
             s['gate1_skipped'] + s['gate2_skipped'] +
@@ -4722,6 +4736,12 @@ class EnhancedFileOrganizer:
         self.logger.info(f"  Files pruned (deleted):   {s['files_pruned']:>8,}")
         if s['dirs_cleaned']:
             self.logger.info(f"  Empty dirs removed:       {s['dirs_cleaned']:>8,}")
+        self.logger.info(f"  Total elapsed:            {_fmt_dur(_t_done - _t_start):>8}")
+        self.logger.info(f"    Scan & organize:        {_fmt_dur(_t_kw    - _t_scan):>8}")
+        self.logger.info(f"    Keyword links:          {_fmt_dur(_t_sem   - _t_kw  ):>8}")
+        self.logger.info(f"    Semantic links:         {_fmt_dur(_t_sync  - _t_sem ):>8}")
+        self.logger.info(f"    Folder sync:            {_fmt_dur(_t_dedup - _t_sync):>8}")
+        self.logger.info(f"    Deduplication:          {_fmt_dur(_t_done  - _t_dedup):>8}")
         self.logger.info(f"  Unique files with links:  {total_with_links:>8,}")
         self.logger.info(f"  Total symlinks:           {total_links:>8,}")
         self.logger.info(f"  Output: {output_base}")
