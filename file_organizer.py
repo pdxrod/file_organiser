@@ -26,6 +26,7 @@ Features:
 
 import os
 import sys
+import fnmatch
 
 # Suppress macOS MallocStackLogging warnings (harmless but annoying)
 # This warning appears when libraries (like PyTorch/NumPy) try to disable malloc stack logging
@@ -1798,6 +1799,9 @@ class EnhancedFileOrganizer:
             # In production mode, save to home directory
             self.progress_file = Path.home() / '.file_organizer_progress.json'
         
+        # Pre-compile exclusion structures (must come after all config overrides)
+        self._setup_exclude_cache()
+
         # Initialize managers (after config overrides)
         self.folder_sync = FolderSynchronizer(self.logger, self.config)
         self.background_backup = BackgroundBackup(self.logger, self.config)
@@ -3306,58 +3310,87 @@ class EnhancedFileOrganizer:
                     self.logger.error(f"Path operation failed after {self.config['flaky_volume_retries']} attempts: {e}")
                     raise
     
+    def _setup_exclude_cache(self) -> None:
+        """Pre-compute exclusion structures once so should_exclude_path() avoids
+        repeated config lookups and list concatenation on every file/dir call.
+
+        Must be called after all config overrides (test-mode patches etc.) are applied.
+        """
+        # softlink_backup_base — always excluded; use a string prefix for speed
+        self._excl_organised_prefix = str(self._get_organised_base())
+
+        # Absolute path prefixes to exclude (exclude_folders)
+        self._excl_folders: List[str] = list(self.config.get('exclude_folders', []))
+
+        # exclude_patterns: file/path patterns (.DS_Store, *.pyc, …)
+        # Plain patterns keep substring matching (users may use path fragments here).
+        # Wildcard patterns are matched against each path component via fnmatch.
+        excl = self.config.get('exclude_patterns', [])
+        self._excl_wildcard: List[str] = [p for p in excl if '*' in p or '?' in p]
+        self._excl_plain: List[str] = [p for p in excl if '*' not in p and '?' not in p]
+
+        # softlink_folder_patterns + empty_folder_patterns: EXACT path-component match.
+        # Must not use substring matching — "env" would wrongly exclude "environments".
+        folder_pats = (
+            self.config.get('softlink_folder_patterns', []) +
+            self.config.get('empty_folder_patterns', [])
+        )
+        self._excl_folder_names: set = {
+            p for p in folder_pats if '*' not in p and '?' not in p
+        }
+        self._excl_folder_wildcards: List[str] = [
+            p for p in folder_pats if '*' in p or '?' in p
+        ]
+
+        # File extension exclusions — set for O(1) lookup
+        self._excl_extensions: set = set(self.config.get('exclude_extensions', []))
+        self._excl_min_size: int = self.config.get('min_file_size', 0)
+
     def should_exclude_path(self, path: Path) -> bool:
         """Check if path should be excluded from processing."""
         path_str = str(path)
-        
-        # CRITICAL: Always exclude softlink_backup_base (where excluded folders are backed up)
-        organised_path = self._get_organised_base()
-        try:
-            if path.is_relative_to(organised_path) or organised_path in path.parents:
+
+        # CRITICAL: Always exclude softlink_backup_base (where excluded folders are backed up).
+        # String prefix check is faster than is_relative_to() + path.parents traversal.
+        org = self._excl_organised_prefix
+        if path_str == org or path_str.startswith(org + os.sep):
+            return True
+
+        # Check exclude_folders (absolute path prefixes)
+        for folder in self._excl_folders:
+            if path_str.startswith(folder):
                 return True
-        except ValueError:
-            # Path is not relative, check if organised appears in path
-            if 'organised' in path_str and str(organised_path) in path_str:
-                return True
-        
-        # Check exclude_folders (absolute paths) - optional, defaults to empty list
-        exclude_folders = self.config.get('exclude_folders', [])
-        for exclude in exclude_folders:
-            if path_str.startswith(exclude):
-                return True
-        
-        # Check all exclude patterns (exclude_patterns, softlink_folder_patterns, empty_folder_patterns)
-        import fnmatch
-        exclude_patterns = self.config.get('exclude_patterns', [])
-        softlink_patterns = self.config.get('softlink_folder_patterns', [])
-        empty_patterns = self.config.get('empty_folder_patterns', [])
-        all_patterns = exclude_patterns + softlink_patterns + empty_patterns
-        
+
+        # Check softlink/empty-folder patterns against individual path components.
+        # Exact-name matching prevents "env" from matching "environments".
         path_parts = path.parts
-        for pattern in all_patterns:
-            if '*' in pattern or '?' in pattern:
-                for part in path_parts:
-                    if fnmatch.fnmatch(part, pattern):
-                        return True
-            else:
-                if pattern in path_str:
-                    return True
-        
-        # Check exclude_extensions
-        if path.is_file():
-            extension = path.suffix.lower()
-            if extension in self.config.get('exclude_extensions', []):
+        for part in path_parts:
+            if part in self._excl_folder_names:
                 return True
-            
-            # Check minimum file size (skip tiny files like icons)
-            min_size = self.config.get('min_file_size', 0)
-            if min_size > 0:
+            for pat in self._excl_folder_wildcards:
+                if fnmatch.fnmatch(part, pat):
+                    return True
+
+        # Check exclude_patterns: wildcard against components, plain as substring
+        for pat in self._excl_wildcard:
+            for part in path_parts:
+                if fnmatch.fnmatch(part, pat):
+                    return True
+        for plain in self._excl_plain:
+            if plain in path_str:
+                return True
+
+        # File-specific checks
+        if path.is_file():
+            if path.suffix.lower() in self._excl_extensions:
+                return True
+            if self._excl_min_size > 0:
                 try:
-                    if path.stat().st_size < min_size:
+                    if path.stat().st_size < self._excl_min_size:
                         return True
                 except Exception:
                     pass
-        
+
         return False
     
     def classify_by_type(self, file_path: Path) -> List[str]:
