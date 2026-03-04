@@ -4544,6 +4544,41 @@ class EnhancedFileOrganizer:
                     self.logger.warning(f"Source folder does not exist: {folder_a}")
                     self.logger.info(f"Will retry {pair_label} {i+1} on next run when source becomes available")
     
+    def _process_softlink_folders(self) -> None:
+        """Back up softlink_folder_patterns to ~/organised for all local paths.
+
+        Runs independently of sync so ~/organised is populated even when
+        cloud/external drives are offline.  Covers source_folders plus the
+        local (MAIN_DRIVE) side of every sync/one_way pair.
+        """
+        if not self.config.get('softlink_folder_patterns'):
+            return
+
+        organised_base = self._get_organised_base()
+
+        # Collect unique local paths from source_folders and sync pair lists
+        local_paths: set = set()
+        for folder in self.config.get('source_folders', []):
+            p = Path(folder)
+            if p.exists() and self.folder_sync._should_process_excluded_folders(p):
+                local_paths.add(p)
+
+        for pair in (self.config.get('sync_pairs', []) +
+                     self.config.get('one_way_pairs', [])):
+            for folder in pair.get('folders', []):
+                p = Path(folder)
+                if p.exists() and self.folder_sync._should_process_excluded_folders(p):
+                    local_paths.add(p)
+
+        if not local_paths:
+            return
+
+        self.logger.info(
+            f"Processing softlink_folder_patterns in {len(local_paths)} local directories"
+        )
+        for path in sorted(local_paths):
+            self.folder_sync._process_excluded_folders_in_directory(path, organised_base)
+
     def sync_configured_folders(self) -> None:
         """Synchronize configured folder pairs."""
         if not self.config['enable_folder_sync']:
@@ -4778,7 +4813,8 @@ class EnhancedFileOrganizer:
         _t_sync = time.time()
         if hasattr(self, 'running') and not self.running:
             return
-        self.logger.info("Step 3: Syncing configured folders (this may take a while)...")
+        self.logger.info("Step 3: Processing softlink folders and syncing...")
+        self._process_softlink_folders()
         self.sync_configured_folders()
         
         # Step 4: Remove duplicates (time-consuming, runs after organization)
