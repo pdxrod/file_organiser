@@ -1,0 +1,29 @@
+# Core dependencies
+Pillow>=9.0.0
+pytesseract>=0.3.10
+opencv-python>=4.8.0  # Also installs numpy
+pdf2image>=1.16.0
+PyYAML>=6.0
+psutil>=5.9.0
+
+# Advanced AI/ML for image understanding
+easyocr>=1.7.0  # Better OCR for artistic text
+transformers>=4.30.0  # For CLIP image classification
+torch>=2.0.0  # PyTorch for ML models
+
+# Document parsing
+python-docx>=0.8.11
+PyPDF2>=3.0.0
+striprtf>=0.0.26
+odfpy>=1.4.1
+
+# Optional: For better PDF handling
+# pypdf>=3.0.0
+
+# Optional: For advanced text processing
+# nltk>=3.8
+# spacy>=3.4.0
+
+# Optional: For machine learning content classification
+# scikit-learn>=1.2.0
+# transformers>=4.20.0
